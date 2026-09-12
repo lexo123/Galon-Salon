@@ -1,0 +1,172 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with role-based access control",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "enum": ["CUSTOMER", "EMPLOYEE", "ADMIN", "OWNER"] },
+        "firstName": { "type": "string", "maxLength": 64 },
+        "lastName": { "type": "string", "maxLength": 64 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "email": { "type": "string", "maxLength": 128 },
+        "language": { "type": "string", "enum": ["ka", "en"] },
+        "status": { "type": "string", "enum": ["ACTIVE", "SUSPENDED", "DELETED"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "lastLoginAt": { "type": "string" },
+        "deletedAt": { "type": "string" }
+      },
+      "required": ["id", "role", "firstName", "lastName", "email", "status", "createdAt", "updatedAt"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Salon service category",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "nameKa": { "type": "string", "maxLength": 100 },
+        "nameEn": { "type": "string", "maxLength": 100 },
+        "descriptionKa": { "type": "string", "maxLength": 500 },
+        "descriptionEn": { "type": "string", "maxLength": 500 },
+        "displayOrder": { "type": "number" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "nameKa", "nameEn", "displayOrder", "isActive", "createdAt", "updatedAt"]
+    },
+    "Service": {
+      "title": "Service",
+      "description": "Salon service offered to customers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "categoryId": { "type": "string", "maxLength": 128 },
+        "nameKa": { "type": "string", "maxLength": 100 },
+        "nameEn": { "type": "string", "maxLength": 100 },
+        "priceMin": { "type": "number" },
+        "priceMax": { "type": "number" },
+        "durationMin": { "type": "number" },
+        "durationMax": { "type": "number" },
+        "displayOrder": { "type": "number" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "categoryId", "nameKa", "nameEn", "priceMin", "priceMax", "durationMin", "durationMax", "isActive"]
+    },
+    "Employee": {
+      "title": "Employee",
+      "description": "Salon staff member",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "employeeType": { "type": "string", "enum": ["CUSTOMER_FACING", "INTERNAL"] },
+        "firstName": { "type": "string", "maxLength": 64 },
+        "lastName": { "type": "string", "maxLength": 64 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE", "DEACTIVATED"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "deactivatedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "employeeType", "firstName", "lastName", "status", "createdAt", "updatedAt"]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "Customer booking appointment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["CONFIRMED", "CANCELLED", "COMPLETED"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "customerId", "status", "createdAt", "updatedAt"]
+    },
+    "BookingItem": {
+      "title": "BookingItem",
+      "description": "Line item in a booking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "bookingId": { "type": "string", "maxLength": 128 },
+        "serviceId": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "durationMinutes": { "type": "number" },
+        "status": { "type": "string", "enum": ["CONFIRMED", "CANCELLED", "COMPLETED"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "bookingId", "serviceId", "employeeId", "startTime", "endTime", "durationMinutes", "status"]
+    },
+    "AvailabilityLedger": {
+      "title": "AvailabilityLedger",
+      "description": "Employee-day interval ledger for atomic concurrency control",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 10 },
+        "bookedIntervals": { "type": "array" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "employeeId", "date", "bookedIntervals", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Audit trail record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "actorUserId": { "type": "string", "maxLength": 128 },
+        "actorRole": { "type": "string" },
+        "action": { "type": "string", "maxLength": 64 },
+        "entityType": { "type": "string", "maxLength": 64 },
+        "entityId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "actorUserId", "actorRole", "action", "entityType", "entityId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile records with role and contact information"
+    },
+    "/categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Service categories"
+    },
+    "/services/{serviceId}": {
+      "schema": "Service",
+      "description": "Catalog of salon services"
+    },
+    "/employees/{employeeId}": {
+      "schema": "Employee",
+      "description": "Employee operational profiles"
+    },
+    "/bookings/{bookingId}": {
+      "schema": "Booking",
+      "description": "Customer booking master record"
+    },
+    "/bookingItems/{bookingItemId}": {
+      "schema": "BookingItem",
+      "description": "Line items for booked services and assigned employees"
+    },
+    "/availability/{ledgerId}": {
+      "schema": "AvailabilityLedger",
+      "description": "Daily booking concurrency ledger per employee"
+    },
+    "/auditLogs/{logId}": {
+      "schema": "AuditLog",
+      "description": "System and administrative action audit history"
+    }
+  }
+}

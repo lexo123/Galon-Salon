@@ -1,0 +1,6 @@
+{
+  "name": "Galon Beauty Salon",
+  "description": "Official web application for Galon beauty salon in Tbilisi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

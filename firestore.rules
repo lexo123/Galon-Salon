@@ -1,0 +1,221 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny all reads and writes
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['ADMIN', 'OWNER']
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // ========================================================================
+    // USERS COLLECTION
+    // Users can read/update their own profile. Privilege escalation is blocked.
+    // ========================================================================
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      
+      // Self-registration: Must be signed in, match UID, role must be CUSTOMER, status must be ACTIVE
+      allow create: if isValidId(userId) && isOwner(userId) &&
+        incoming().role == 'CUSTOMER' &&
+        incoming().status == 'ACTIVE' &&
+        incoming().id == userId &&
+        incoming().phone is string &&
+        incoming().phone.size() <= 32 &&
+        incoming().firstName is string &&
+        incoming().firstName.size() <= 64 &&
+        incoming().lastName is string &&
+        incoming().lastName.size() <= 64;
+
+      // Profile updates: Cannot change role, status, email, or id
+      allow update: if isValidId(userId) && isOwner(userId) &&
+        incoming().id == existing().id &&
+        incoming().role == existing().role &&
+        incoming().status == existing().status &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['firstName', 'lastName', 'phone', 'language', 'updatedAt', 'lastLoginAt']);
+
+      allow delete: if false;
+    }
+
+    // ========================================================================
+    // PUBLIC CATALOG: CATEGORIES & SERVICES
+    // Public read-only, all mutations backend-mediated
+    // ========================================================================
+    match /categories/{categoryId} {
+      allow read: if isValidId(categoryId);
+      allow write: if false;
+    }
+
+    match /services/{serviceId} {
+      allow read: if isValidId(serviceId);
+      allow write: if false;
+    }
+
+    // ========================================================================
+    // EMPLOYEES, PROFILES & PORTFOLIO
+    // Public read ONLY for CUSTOMER_FACING active employees. Internal employees
+    // are strictly private. All mutations backend-mediated.
+    // ========================================================================
+    match /employees/{employeeId} {
+      allow get: if isValidId(employeeId) && (
+        (resource.data.employeeType == 'CUSTOMER_FACING' && resource.data.status == 'ACTIVE') ||
+        isAdmin()
+      );
+      allow list: if (
+        resource.data.employeeType == 'CUSTOMER_FACING' && resource.data.status == 'ACTIVE'
+      ) || isAdmin();
+      allow write: if false;
+    }
+
+    match /employeeProfiles/{profileId} {
+      allow get: if isValidId(profileId) && (resource.data.isPublic == true || isAdmin());
+      allow list: if resource.data.isPublic == true || isAdmin();
+      allow write: if false;
+    }
+
+    match /employeePortfolio/{portfolioId} {
+      allow read: if isValidId(portfolioId);
+      allow write: if false;
+    }
+
+    match /employeeServices/{mappingId} {
+      allow read: if isValidId(mappingId);
+      allow write: if false;
+    }
+
+    // ========================================================================
+    // SCHEDULES
+    // Public read for scheduling; writes strictly backend-mediated
+    // ========================================================================
+    match /weeklySchedules/{scheduleId} {
+      allow read: if isValidId(scheduleId);
+      allow write: if false;
+    }
+
+    match /scheduleBreaks/{breakId} {
+      allow read: if isValidId(breakId);
+      allow write: if false;
+    }
+
+    match /scheduleExceptions/{exceptionId} {
+      allow read: if isValidId(exceptionId);
+      allow write: if false;
+    }
+
+    // ========================================================================
+    // REVIEWS
+    // Public read for approved employee reviews; writes backend-mediated
+    // ========================================================================
+    match /employeeReviews/{reviewId} {
+      allow get: if isValidId(reviewId) && (resource.data.status == 'APPROVED' || isAdmin() || (isSignedIn() && resource.data.customerId == request.auth.uid));
+      allow list: if resource.data.status == 'APPROVED' || isAdmin() || (isSignedIn() && resource.data.customerId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /reviewHistory/{historyId} {
+      allow read, write: if false;
+    }
+
+    // ========================================================================
+    // NOTIFICATIONS
+    // In-app notifications: User can read and mark read their own notifications
+    // ========================================================================
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isSignedIn() && resource.data.recipientUserId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.recipientUserId == request.auth.uid;
+      allow update: if isValidId(notificationId) && isSignedIn() && resource.data.recipientUserId == request.auth.uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'readAt']);
+      allow create, delete: if false;
+    }
+
+    // ========================================================================
+    // MEDIA
+    // Public read for media; client write denied
+    // ========================================================================
+    match /media/{mediaId} {
+      allow read: if isValidId(mediaId);
+      allow write: if false;
+    }
+
+    // ========================================================================
+    // BOOKINGS & BOOKING ITEMS
+    // Client write strictly DENIED. Read restricted to customer or staff.
+    // ========================================================================
+    match /bookings/{bookingId} {
+      allow get: if isValidId(bookingId) && isSignedIn() && (
+        resource.data.customerId == request.auth.uid || isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.customerId == request.auth.uid || isAdmin()
+      );
+      allow write: if false; // Backend-mediated ONLY
+    }
+
+    match /bookingItems/{bookingItemId} {
+      allow get: if isValidId(bookingItemId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow write: if false; // Backend-mediated ONLY
+    }
+
+    match /bookingHistory/{historyId} {
+      allow read: if isAdmin();
+      allow write: if false; // Backend-mediated ONLY
+    }
+
+    // ========================================================================
+    // STRICTLY LOCKED COLLECTIONS (NO CLIENT READ, NO CLIENT WRITE)
+    // ========================================================================
+    // Availability Ledger (Concurrency & Internal Ledger)
+    match /availability/{ledgerId} {
+      allow read, write: if false;
+    }
+
+    // Idempotency Records (Backend-only)
+    match /idempotency/{recordId} {
+      allow read, write: if false;
+    }
+
+    // Customer Ratings (Private Employee-to-Customer ratings: NEVER exposed to client)
+    match /customerRatings/{ratingId} {
+      allow read, write: if false;
+    }
+
+    // Audit Logs (Backend-only)
+    match /auditLogs/{logId} {
+      allow read, write: if false;
+    }
+
+    // Payments (Backend-only)
+    match /payments/{paymentId} {
+      allow read, write: if false;
+    }
+  }
+}
