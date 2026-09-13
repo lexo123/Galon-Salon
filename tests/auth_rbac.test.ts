@@ -2,10 +2,12 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * Phase 2 Automated Tests: Authentication, User Roles, RBAC & Ownership
+ * Phase 2 Automated Tests: Authentication, User Roles, RBAC & Security Boundaries
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   UserRole,
   UserStatus,
@@ -26,10 +28,15 @@ import {
   requireSelfOrAdmin,
 } from '../server/middleware/rbac.ts';
 import { authenticateToken, AuthenticatedUser } from '../server/middleware/auth.ts';
+import * as firebaseAdminModule from '../server/config/firebaseAdmin.ts';
 import { UnauthorizedError, ForbiddenError } from '../server/utils/errors.ts';
 import type { Request, Response, NextFunction } from 'express';
 
-function createMockReq(user?: AuthenticatedUser, params: Record<string, string> = {}, headers: Record<string, string> = {}): Request {
+function createMockReq(
+  user?: AuthenticatedUser,
+  params: Record<string, string> = {},
+  headers: Record<string, string> = {}
+): Request {
   return {
     user,
     params,
@@ -149,6 +156,157 @@ describe('Phase 2 Middleware: Authentication & Status Enforcement', () => {
     const next2 = vi.fn();
     await authenticateToken(reqBadHeader, createMockRes(), next2);
     expect(next2).toHaveBeenCalledWith(expect.any(UnauthorizedError));
+  });
+});
+
+describe('Phase 2 Middleware: Fail-Closed Auth & Firestore Resolution', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('successfully resolves an existing ACTIVE user from Firestore', async () => {
+    const mockVerifyIdToken = vi.fn().mockResolvedValue({
+      uid: 'user_active_1',
+      email: 'active@example.com',
+      email_verified: true,
+    });
+    const mockUserDocGet = vi.fn().mockResolvedValue({
+      exists: true,
+      id: 'user_active_1',
+      data: () => ({
+        id: 'user_active_1',
+        role: 'CUSTOMER',
+        status: 'ACTIVE',
+        firstName: 'Nino',
+        lastName: 'Lomidze',
+        phone: '+995555111222',
+        email: 'active@example.com',
+        language: 'ka',
+      }),
+    });
+
+    vi.spyOn(firebaseAdminModule, 'getAdminAuth').mockReturnValue({
+      verifyIdToken: mockVerifyIdToken,
+    } as any);
+    vi.spyOn(firebaseAdminModule, 'getAdminDb').mockReturnValue({
+      collection: () => ({
+        doc: () => ({
+          get: mockUserDocGet,
+        }),
+      }),
+    } as any);
+
+    const req = createMockReq(undefined, {}, { authorization: 'Bearer valid_token' });
+    const next = vi.fn();
+
+    await authenticateToken(req, createMockRes(), next);
+
+    expect(next).toHaveBeenCalledWith();
+    expect(req.user).toBeDefined();
+    expect(req.user?.uid).toBe('user_active_1');
+    expect(req.user?.role).toBe('CUSTOMER');
+    expect(req.user?.status).toBe('ACTIVE');
+  });
+
+  it('assigns safe low-privilege defaults (CUSTOMER / ACTIVE) when user document does not exist (registration race)', async () => {
+    const mockVerifyIdToken = vi.fn().mockResolvedValue({
+      uid: 'user_race_1',
+      email: 'race@example.com',
+      email_verified: true,
+      role: 'ADMIN', // Token claims must NOT override
+    });
+    const mockUserDocGet = vi.fn().mockResolvedValue({
+      exists: false,
+    });
+
+    vi.spyOn(firebaseAdminModule, 'getAdminAuth').mockReturnValue({
+      verifyIdToken: mockVerifyIdToken,
+    } as any);
+    vi.spyOn(firebaseAdminModule, 'getAdminDb').mockReturnValue({
+      collection: () => ({
+        doc: () => ({
+          get: mockUserDocGet,
+        }),
+      }),
+    } as any);
+
+    const req = createMockReq(undefined, {}, { authorization: 'Bearer race_token' });
+    const next = vi.fn();
+
+    await authenticateToken(req, createMockRes(), next);
+
+    expect(next).toHaveBeenCalledWith();
+    expect(req.user).toBeDefined();
+    expect(req.user?.uid).toBe('user_race_1');
+    expect(req.user?.role).toBe('CUSTOMER'); // Default low privilege
+    expect(req.user?.status).toBe('ACTIVE');
+  });
+
+  it('fails closed when Firestore lookup throws a database/network error', async () => {
+    const mockVerifyIdToken = vi.fn().mockResolvedValue({
+      uid: 'user_err_1',
+      email: 'err@example.com',
+      role: 'ADMIN', // Even with admin claim
+    });
+    const mockUserDocGet = vi.fn().mockRejectedValue(new Error('Firestore connection failure / timeout'));
+
+    vi.spyOn(firebaseAdminModule, 'getAdminAuth').mockReturnValue({
+      verifyIdToken: mockVerifyIdToken,
+    } as any);
+    vi.spyOn(firebaseAdminModule, 'getAdminDb').mockReturnValue({
+      collection: () => ({
+        doc: () => ({
+          get: mockUserDocGet,
+        }),
+      }),
+    } as any);
+
+    const req = createMockReq(undefined, {}, { authorization: 'Bearer db_error_token' });
+    const next = vi.fn();
+
+    await authenticateToken(req, createMockRes(), next);
+
+    expect(next).toHaveBeenCalledWith(expect.any(UnauthorizedError));
+    const error = next.mock.calls[0][0] as UnauthorizedError;
+    expect(error.statusCode).toBe(401);
+    expect(error.message).toBe('Unable to verify account status');
+    expect(req.user).toBeUndefined(); // MUST NOT attach active user
+  });
+
+  it('rejects suspended users in Firestore with 403 ACCOUNT_DISABLED', async () => {
+    const mockVerifyIdToken = vi.fn().mockResolvedValue({
+      uid: 'user_suspended_1',
+      email: 'suspended@example.com',
+    });
+    const mockUserDocGet = vi.fn().mockResolvedValue({
+      exists: true,
+      id: 'user_suspended_1',
+      data: () => ({
+        role: 'CUSTOMER',
+        status: 'SUSPENDED',
+      }),
+    });
+
+    vi.spyOn(firebaseAdminModule, 'getAdminAuth').mockReturnValue({
+      verifyIdToken: mockVerifyIdToken,
+    } as any);
+    vi.spyOn(firebaseAdminModule, 'getAdminDb').mockReturnValue({
+      collection: () => ({
+        doc: () => ({
+          get: mockUserDocGet,
+        }),
+      }),
+    } as any);
+
+    const req = createMockReq(undefined, {}, { authorization: 'Bearer suspended_token' });
+    const next = vi.fn();
+
+    await authenticateToken(req, createMockRes(), next);
+
+    expect(next).toHaveBeenCalledWith(expect.any(ForbiddenError));
+    const error = next.mock.calls[0][0] as ForbiddenError;
+    expect(error.statusCode).toBe(403);
+    expect(error.code).toBe('ACCOUNT_DISABLED');
   });
 });
 
@@ -287,7 +445,34 @@ describe('Phase 2 Middleware: Resource Ownership Enforcement', () => {
   });
 });
 
-describe('Phase 2 Security: Environment & Secret Hygiene', () => {
+describe('Phase 2 Security: Firestore Security Rules & Client Single Write Path', () => {
+  const rulesContent = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf-8');
+
+  it('ensures bookingItems has allow read, write: if false (client deny-all)', () => {
+    const bookingItemsMatch = rulesContent.match(/match\s+\/bookingItems\/\{bookingItemId\}\s*\{([^}]+)\}/);
+    expect(bookingItemsMatch).not.toBeNull();
+    const ruleBody = bookingItemsMatch![1];
+    expect(ruleBody).toContain('allow read, write: if false;');
+  });
+
+  it('ensures users collection has allow create: if false (backend-mediated only)', () => {
+    const usersMatch = rulesContent.match(/match\s+\/users\/\{userId\}\s*\{([^}]+(?:\{[^}]+\}[^}]+)*)\}/);
+    expect(usersMatch).not.toBeNull();
+    const ruleBody = usersMatch![1];
+    expect(ruleBody).toContain('allow create: if false;');
+  });
+
+  it('confirms AuthContext.tsx has no direct client setDoc write in registerCustomer', () => {
+    const authContextContent = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/auth/AuthContext.tsx'),
+      'utf-8'
+    );
+    // Ensure setDoc is not imported or called
+    expect(authContextContent).not.toContain('setDoc(');
+    // Ensure registerCustomer calls /api/auth/register-profile
+    expect(authContextContent).toContain('/api/auth/register-profile');
+  });
+
   it('confirms server credentials do not use VITE_ prefix', () => {
     const serverVarNames = ['FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'FIREBASE_PRIVATE_KEY'];
     serverVarNames.forEach((varName) => {

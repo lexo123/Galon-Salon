@@ -57,34 +57,40 @@ export async function authenticateToken(
     let userProfile: User | undefined;
 
     const adminDb = getAdminDb();
-    if (adminDb) {
-      try {
-        const userDoc = await adminDb.collection(COLLECTIONS.USERS).doc(decodedToken.uid).get();
-        if (userDoc.exists) {
-          const data = userDoc.data() as User;
-          if (data.role) role = data.role;
-          if (data.status) status = data.status;
-          userProfile = {
-            id: userDoc.id,
-            role: data.role || 'CUSTOMER',
-            firstName: data.firstName || '',
-            lastName: data.lastName || '',
-            phone: data.phone || '',
-            email: data.email || decodedToken.email || '',
-            language: data.language || 'ka',
-            status: data.status || 'ACTIVE',
-            createdAt: data.createdAt || new Date().toISOString(),
-            updatedAt: data.updatedAt || new Date().toISOString(),
-            lastLoginAt: data.lastLoginAt || null,
-            deletedAt: data.deletedAt || null,
-          };
-        }
-      } catch (dbErr) {
-        // Fall back to token custom claims if set
-        if (decodedToken.role) {
-          role = decodedToken.role as UserRole;
-        }
+    if (!adminDb) {
+      return next(new UnauthorizedError('Database service is unavailable'));
+    }
+
+    try {
+      const userDoc = await adminDb.collection(COLLECTIONS.USERS).doc(decodedToken.uid).get();
+      if (userDoc.exists) {
+        const data = userDoc.data() as User;
+        if (data.role) role = data.role;
+        if (data.status) status = data.status;
+        userProfile = {
+          id: userDoc.id,
+          role: data.role || 'CUSTOMER',
+          firstName: data.firstName || '',
+          lastName: data.lastName || '',
+          phone: data.phone || '',
+          email: data.email || decodedToken.email || '',
+          language: data.language || 'ka',
+          status: data.status || 'ACTIVE',
+          createdAt: data.createdAt || new Date().toISOString(),
+          updatedAt: data.updatedAt || new Date().toISOString(),
+          lastLoginAt: data.lastLoginAt || null,
+          deletedAt: data.deletedAt || null,
+        };
+      } else {
+        // Legitimate registration race: user document does not exist yet.
+        // Assign low-privilege defaults only; do NOT allow unrestricted access.
+        role = 'CUSTOMER';
+        status = 'ACTIVE';
       }
+    } catch (dbErr) {
+      // A database read error MUST fail closed.
+      // MUST NOT leave status as ACTIVE or fall back to custom claims.
+      return next(new UnauthorizedError('Unable to verify account status'));
     }
 
     // Account status enforcement: Disabled/deactivated users cannot access protected application functionality

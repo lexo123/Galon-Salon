@@ -37,23 +37,14 @@ service cloud.firestore {
 
     // ========================================================================
     // USERS COLLECTION
-    // Users can read/update their own profile. Privilege escalation is blocked.
+    // Users can read/update their own profile. Registration is backend-mediated.
     // ========================================================================
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if isAdmin();
       
-      // Self-registration: Must be signed in, match UID, role must be CUSTOMER, status must be ACTIVE
-      allow create: if isValidId(userId) && isOwner(userId) &&
-        incoming().role == 'CUSTOMER' &&
-        incoming().status == 'ACTIVE' &&
-        incoming().id == userId &&
-        incoming().phone is string &&
-        incoming().phone.size() <= 32 &&
-        incoming().firstName is string &&
-        incoming().firstName.size() <= 64 &&
-        incoming().lastName is string &&
-        incoming().lastName.size() <= 64;
+      // Self-registration is strictly backend-mediated via /api/auth/register-profile
+      allow create: if false;
 
       // Profile updates: Cannot change role, status, email, or id
       allow update: if isValidId(userId) && isOwner(userId) &&
@@ -180,9 +171,7 @@ service cloud.firestore {
     }
 
     match /bookingItems/{bookingItemId} {
-      allow get: if isValidId(bookingItemId) && isSignedIn();
-      allow list: if isSignedIn();
-      allow write: if false; // Backend-mediated ONLY
+      allow read, write: if false; // Backend-mediated ONLY
     }
 
     match /bookingHistory/{historyId} {

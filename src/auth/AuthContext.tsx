@@ -16,7 +16,7 @@ import {
   signOut as firebaseSignOut,
   sendPasswordResetEmail,
 } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase.ts';
 import { User, UserRole, UserStatus, COLLECTIONS } from '../types/index.ts';
 
@@ -155,7 +155,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   /**
    * Customer Registration
    * 1. Creates Firebase Auth user account.
-   * 2. Creates the corresponding users/{uid} document with server-enforced role: CUSTOMER and status: ACTIVE.
+   * 2. Obtains Firebase ID token.
+   * 3. Calls backend /api/auth/register-profile to create authoritative Firestore profile.
+   * 4. Only sets user profile upon successful backend profile creation.
    */
   const registerCustomer = async (params: CustomerRegistrationParams): Promise<void> => {
     if (!auth) throw new Error('Firebase Auth is not configured.');
@@ -174,9 +176,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const cred = await createUserWithEmailAndPassword(auth, email, params.password);
       const uid = cred.user.uid;
-      const now = new Date().toISOString();
+      const token = await cred.user.getIdToken();
 
-      const newUserData: User = {
+      const response = await fetch('/api/auth/register-profile', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          firstName,
+          lastName,
+          phone,
+          email,
+          language,
+        }),
+      });
+
+      if (!response.ok) {
+        const errPayload = await response.json().catch(() => ({}));
+        const errMsg = errPayload.message || 'პროფილის შექმნა ვერ მოხერხდა / Profile registration failed on server.';
+        setAuthError(errMsg);
+        throw new Error(errMsg);
+      }
+
+      const data = await response.json();
+      const confirmedUser: User = data.user || {
         id: uid,
         role: 'CUSTOMER',
         firstName,
@@ -185,45 +210,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email,
         language,
         status: 'ACTIVE',
-        createdAt: now,
-        updatedAt: now,
-        lastLoginAt: now,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
 
-      // 1. Write to Firestore directly (governed by firestore.rules customer create rule)
-      if (db) {
-        try {
-          await setDoc(doc(db, COLLECTIONS.USERS, uid), newUserData);
-        } catch (dbErr) {
-          console.warn('[AuthContext] Client setDoc fallback triggered:', dbErr);
-        }
-      }
-
-      // 2. Call backend register-profile to guarantee authoritative registration
-      try {
-        const token = await cred.user.getIdToken();
-        await fetch('/api/auth/register-profile', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            firstName,
-            lastName,
-            phone,
-            email,
-            language,
-          }),
-        });
-      } catch (backendErr) {
-        console.warn('[AuthContext] Backend register-profile call notice:', backendErr);
-      }
-
-      setUserProfile(newUserData);
+      setUserProfile(confirmedUser);
     } catch (err: unknown) {
-      const code = (err as { code?: string })?.code || '';
-      const message = mapAuthErrorMessage(code);
+      const code = (err as { code?: string })?.code;
+      const message = code ? mapAuthErrorMessage(code) : (err instanceof Error ? err.message : String(err));
       setAuthError(message);
       throw new Error(message);
     }
