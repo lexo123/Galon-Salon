@@ -80,12 +80,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const fetchProfile = useCallback(async (firebaseUser: FirebaseUser): Promise<User | null> => {
     try {
       // First try fetching from authenticated backend /api/auth/me
-      const token = await firebaseUser.getIdToken();
-      const res = await fetch('/api/auth/me', {
+      let token = await firebaseUser.getIdToken();
+      let res = await fetch('/api/auth/me', {
         headers: {
           Authorization: `Bearer ${token}`,
         },
       });
+
+      // If token expired or invalid, force-refresh ID token and retry once
+      if (res.status === 401) {
+        try {
+          token = await firebaseUser.getIdToken(true);
+          res = await fetch('/api/auth/me', {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          });
+        } catch {
+          // Token refresh failed
+        }
+      }
 
       if (res.ok) {
         const data = await res.json();

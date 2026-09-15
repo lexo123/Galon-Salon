@@ -24,7 +24,7 @@ export function initializeFirebaseAdmin(): App | null {
     return adminApp;
   }
 
-  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
   const rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY;
 
@@ -37,8 +37,16 @@ export function initializeFirebaseAdmin(): App | null {
           clientEmail,
           privateKey,
         }),
+        projectId,
       });
       console.log('[Firebase Admin] Initialized with service account credentials for project:', projectId);
+    } else if (projectId) {
+      // In GCP / Cloud Run, Application Default Credentials (ADC) are automatically picked up,
+      // and explicit projectId ensures token verification checks the correct Firebase project audience.
+      adminApp = initializeApp({
+        projectId,
+      });
+      console.log('[Firebase Admin] Initialized with project ID:', projectId);
     } else {
       // In GCP / Cloud Run, Application Default Credentials (ADC) are automatically picked up
       adminApp = initializeApp();

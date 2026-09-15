@@ -30,9 +30,13 @@ router.get('/me', authenticateToken, requireAuthenticatedUser, async (req: Reque
     let profile = user.profile;
 
     if (!profile && adminDb) {
-      const doc = await adminDb.collection(COLLECTIONS.USERS).doc(user.uid).get();
-      if (doc.exists) {
-        profile = { id: doc.id, ...(doc.data() as Omit<User, 'id'>) };
+      try {
+        const doc = await adminDb.collection(COLLECTIONS.USERS).doc(user.uid).get();
+        if (doc.exists) {
+          profile = { id: doc.id, ...(doc.data() as Omit<User, 'id'>) };
+        }
+      } catch {
+        // If adminDb lookup fails, profile remains undefined and triggers profilePending response
       }
     }
 

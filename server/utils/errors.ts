@@ -70,13 +70,17 @@ export function errorHandler(
   const code = isAppError ? err.code : 'INTERNAL_SERVER_ERROR';
   const message = isAppError ? err.message : 'An unexpected error occurred';
 
-  logger.error('Unhandled request error', {
-    method: req.method,
-    path: req.path,
-    statusCode,
-    code,
-    error: err.message,
-  });
+  // Only 5xx internal server errors are unhandled exceptions and should be logged as errors.
+  // 4xx client responses (e.g. 401 Unauthorized, 403 Forbidden, 404 Not Found) are expected operational outcomes.
+  if (statusCode >= 500) {
+    logger.error('Unhandled request error', {
+      method: req.method,
+      path: req.path,
+      statusCode,
+      code,
+      error: err.message,
+    });
+  }
 
   res.status(statusCode).json({
     status: 'error',
