@@ -16,9 +16,8 @@ import {
   signOut as firebaseSignOut,
   sendPasswordResetEmail,
 } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
-import { auth, db } from '../lib/firebase.ts';
-import { User, UserRole, UserStatus, COLLECTIONS } from '../types/index.ts';
+import { auth } from '../lib/firebase.ts';
+import { User, UserRole, UserStatus } from '../types/index.ts';
 
 export interface CustomerRegistrationParams {
   email: string;
@@ -106,15 +105,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (data.user && !data.user.profilePending) {
           return data.user as User;
         }
-      }
-
-      // Direct Firestore fallback if backend /api/auth/me profile is pending
-      if (db) {
-        const userRef = doc(db, COLLECTIONS.USERS, firebaseUser.uid);
-        const snapshot = await getDoc(userRef);
-        if (snapshot.exists()) {
-          return { id: snapshot.id, ...(snapshot.data() as Omit<User, 'id'>) };
-        }
+        return null;
       }
     } catch (err) {
       console.warn('[AuthContext] Failed to resolve profile:', err);
