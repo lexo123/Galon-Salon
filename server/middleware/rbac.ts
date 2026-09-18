@@ -21,6 +21,47 @@ export function requireAuthenticatedUser(
 }
 
 /**
+ * Phase 3A: Profile-required access boundary.
+ * Enforces that the authenticated user has an authoritative, complete, and active Firestore profile.
+ * Users in profilePending state (e.g. Firebase Auth user without completed profile) are rejected.
+ */
+export function requireCompleteProfile(
+  req: Request,
+  _res: Response,
+  next: NextFunction
+): void {
+  if (!req.user) {
+    return next(new UnauthorizedError('Authentication required'));
+  }
+  if (!req.user.profile) {
+    return next(
+      new ForbiddenError(
+        'User profile is incomplete or pending registration. Complete profile registration to perform this action.',
+        'PROFILE_REQUIRED'
+      )
+    );
+  }
+  const { firstName, lastName, phone, status } = req.user.profile;
+  if (!firstName || !firstName.trim() || !lastName || !lastName.trim() || !phone || !phone.trim()) {
+    return next(
+      new ForbiddenError(
+        'Required profile details (name and phone) are missing. Please complete your profile.',
+        'PROFILE_INCOMPLETE'
+      )
+    );
+  }
+  if (status !== 'ACTIVE' || req.user.status !== 'ACTIVE') {
+    return next(
+      new ForbiddenError(
+        'Account is suspended or deactivated. Protected access denied.',
+        'ACCOUNT_DISABLED'
+      )
+    );
+  }
+  next();
+}
+
+/**
  * Enforces that user account status is strictly ACTIVE.
  */
 export function requireActiveAccount(

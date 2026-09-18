@@ -10,6 +10,7 @@ import cors from 'cors';
 import healthRoutes from './routes/health.ts';
 import authRoutes from './routes/auth.ts';
 import userRoutes from './routes/users.ts';
+import bookingRoutes from './routes/bookings.ts';
 import { errorHandler } from './utils/errors.ts';
 import { logger } from './utils/logger.ts';
 import { initializeFirebaseAdmin } from './config/firebaseAdmin.ts';
@@ -34,6 +35,10 @@ export function createExpressApp(): Express {
   app.use('/api', healthRoutes);
   app.use('/api/auth', authRoutes);
   app.use('/api/users', userRoutes);
+  app.use('/api/bookings', bookingRoutes);
+
+  // Centralized Error Handler
+  app.use(errorHandler);
 
   return app;
 }
