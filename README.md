@@ -56,6 +56,41 @@ Phase 1 establishes the structural, security, domain, and server foundations wit
 
 ---
 
+## Phase 3 Implementation: Transactional Booking Engine & Availability
+
+Phase 3 implements the authoritative, server-side Booking Engine (`server/services/bookingEngine.ts`) with zero-trust validation, atomic Firestore transactions, and strict access controls.
+
+### Key Architecture Principles & Decisions
+
+1. **D45: Authoritative Service Catalog Validation & Midpoint Rule** (supersedes D16):
+   - Service pricing snapshots and durations are derived exclusively server-side from the Firestore `services` collection.
+   - Client-supplied durations and price values are completely ignored.
+   - Bounded ranges calculate the exact midpoint (`durationMinutes = Math.round((min + max) / 2)`).
+   - Open-ended or invalid ranges are rejected with `INVALID_SERVICE_CONFIGURATION`.
+
+2. **D44: Customer Self-Overlap Prevention**:
+   - A customer cannot have overlapping booked services, regardless of which employee is assigned.
+   - Validated both intra-request (multi-item batches) and inter-booking (against customer's existing confirmed bookings).
+
+3. **R1: Internal Employee Booking Prohibition**:
+   - Internal salon employees (`employeeType == 'INTERNAL'`) are strictly non-bookable and hidden from customer queries.
+
+4. **Working Hours, Schedules, Breaks & Exceptions**:
+   - Authoritative validation against weekly schedules (`weeklySchedules`), schedule breaks (`scheduleBreaks`), and date exceptions (`scheduleExceptions`, both `OFF` and `CUSTOM_HOURS`).
+
+5. **R3 & R4: Transactional Availability Ledger**:
+   - Concurrency control via daily per-employee ledgers (`availability/{employeeId}_{YYYY-MM-DD}`).
+   - Strict read-before-write transactional discipline in Firestore transactions.
+   - Full-array in-memory interval transform and atomic overwrite (no `arrayUnion`/`arrayRemove`).
+
+6. **D42: Request Idempotency**:
+   - Header `Idempotency-Key` with deterministic SHA-256 canonical payload hashing prevents duplicate side-effects.
+
+7. **R2: Booking Visibility RBAC**:
+   - Customers see only their own bookings; employees see their assigned bookings; Admins and Owners see salon-wide bookings.
+
+---
+
 ## Development Scripts
 
 ```bash

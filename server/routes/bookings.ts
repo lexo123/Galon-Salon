@@ -107,22 +107,48 @@ router.get(
 
       const booking = bookingDoc.data() as Booking;
 
-      // Ownership enforcement
-      if (booking.customerId !== user.uid && !isAdminRole(user.role) && !isStaffRole(user.role)) {
-        return next(
-          new ForbiddenError(
-            'You do not have permission to view this booking',
-            'OWNERSHIP_REQUIRED'
-          )
-        );
-      }
-
       const itemsSnapshot = await adminDb
         .collection(COLLECTIONS.BOOKING_ITEMS)
         .where('bookingId', '==', bookingId)
         .get();
 
-      const items = itemsSnapshot.docs.map((d) => d.data() as BookingItem);
+      const items = itemsSnapshot.docs.map((d: any) => d.data() as BookingItem);
+
+      // Ownership enforcement
+      if (!isAdminRole(user.role)) {
+        if (user.role === 'EMPLOYEE') {
+          // Employee can view booking if assigned to them or if they are the customer
+          let employeeId = user.uid;
+          const empSnap = await adminDb
+            .collection(COLLECTIONS.EMPLOYEES)
+            .where('userId', '==', user.uid)
+            .limit(1)
+            .get();
+          if (!empSnap.empty) {
+            employeeId = empSnap.docs[0].id;
+          }
+
+          const hasAssignedItem = items.some((it) => it.employeeId === employeeId);
+          const isCustomer = booking.customerId === user.uid;
+
+          if (!hasAssignedItem && !isCustomer) {
+            return next(
+              new ForbiddenError(
+                'You do not have permission to view this booking',
+                'OWNERSHIP_REQUIRED'
+              )
+            );
+          }
+        } else if (booking.customerId !== user.uid) {
+          // Regular customer can only view their own bookings
+          return next(
+            new ForbiddenError(
+              'You do not have permission to view this booking',
+              'OWNERSHIP_REQUIRED'
+            )
+          );
+        }
+      }
 
       // Only staff/admins get history
       let history: unknown[] = [];
@@ -131,7 +157,7 @@ router.get(
           .collection(COLLECTIONS.BOOKING_HISTORY)
           .where('bookingId', '==', bookingId)
           .get();
-        history = histSnapshot.docs.map((d) => d.data());
+        history = histSnapshot.docs.map((d: any) => d.data());
       }
 
       res.status(200).json({
@@ -148,7 +174,10 @@ router.get(
 
 /**
  * GET /api/bookings
- * Lists bookings for the authenticated user, or lists all for admins.
+ * Lists bookings:
+ * - CUSTOMER: sees only own bookings.
+ * - EMPLOYEE: sees bookings assigned to their employee identity, plus own bookings.
+ * - ADMIN / OWNER: sees all salon bookings (with optional customerId or employeeId filters).
  */
 router.get(
   '/',
@@ -164,16 +193,66 @@ router.get(
         return res.status(200).json({ status: 'ok', bookings: [] });
       }
 
-      let query: any = adminDb.collection(COLLECTIONS.BOOKINGS);
-
-      // Customers and regular employees only list their own bookings
-      if (!isAdminRole(user.role)) {
-        query = query.where('customerId', '==', user.uid);
-      } else if (req.query.customerId) {
-        query = query.where('customerId', '==', req.query.customerId);
+      if (isAdminRole(user.role)) {
+        let query: any = adminDb.collection(COLLECTIONS.BOOKINGS);
+        if (req.query.customerId) {
+          query = query.where('customerId', '==', req.query.customerId);
+        }
+        const snapshot = await query.limit(100).get();
+        const bookings = snapshot.docs.map((d: any) => d.data() as Booking);
+        return res.status(200).json({ status: 'ok', bookings });
       }
 
-      const snapshot = await query.limit(50).get();
+      if (user.role === 'EMPLOYEE') {
+        // Resolve employee identity from userId mapping
+        let employeeId = user.uid;
+        const empSnap = await adminDb
+          .collection(COLLECTIONS.EMPLOYEES)
+          .where('userId', '==', user.uid)
+          .limit(1)
+          .get();
+        if (!empSnap.empty) {
+          employeeId = empSnap.docs[0].id;
+        }
+
+        // Query booking items assigned to this employee
+        const itemsSnap = await adminDb
+          .collection(COLLECTIONS.BOOKING_ITEMS)
+          .where('employeeId', '==', employeeId)
+          .get();
+
+        const assignedBookingIds = Array.from(
+          new Set(itemsSnap.docs.map((d: any) => d.data().bookingId))
+        );
+
+        // Also query any bookings where the employee is the customer
+        const custBookingsSnap = await adminDb
+          .collection(COLLECTIONS.BOOKINGS)
+          .where('customerId', '==', user.uid)
+          .get();
+
+        const customerBookingIds = custBookingsSnap.docs.map((d: any) => d.id);
+        const allTargetBookingIds = Array.from(
+          new Set([...assignedBookingIds, ...customerBookingIds])
+        );
+
+        const bookings: Booking[] = [];
+        for (const bId of allTargetBookingIds) {
+          const bDoc = await adminDb.collection(COLLECTIONS.BOOKINGS).doc(bId).get();
+          if (bDoc.exists) {
+            bookings.push(bDoc.data() as Booking);
+          }
+        }
+
+        return res.status(200).json({ status: 'ok', bookings });
+      }
+
+      // CUSTOMER: only see own bookings
+      const query = adminDb
+        .collection(COLLECTIONS.BOOKINGS)
+        .where('customerId', '==', user.uid)
+        .limit(50);
+      const snapshot = await query.get();
       const bookings = snapshot.docs.map((d: any) => d.data() as Booking);
 
       res.status(200).json({

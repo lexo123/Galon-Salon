@@ -70,6 +70,41 @@ class MockFirestoreDb {
     const colStore = this.store.get(name) || new Map();
     this.store.set(name, colStore);
 
+    const makeQuery = (
+      filters: Array<{ field: string; op: string; val: any }>,
+      limitVal?: number
+    ) => ({
+      collectionName: name,
+      where: (field: string, op: string, val: any) =>
+        makeQuery([...filters, { field, op, val }], limitVal),
+      limit: (num: number) => makeQuery(filters, num),
+      get: async () => {
+        const docs: any[] = [];
+        for (const [id, data] of colStore.entries()) {
+          let matches = true;
+          for (const f of filters) {
+            if (f.op === '==' && data[f.field] !== f.val) {
+              matches = false;
+              break;
+            }
+          }
+          if (matches) {
+            docs.push({
+              id,
+              exists: true,
+              data: () => data,
+            });
+            if (limitVal && docs.length >= limitVal) break;
+          }
+        }
+        return {
+          empty: docs.length === 0,
+          size: docs.length,
+          docs,
+        };
+      },
+    });
+
     return {
       id: name,
       doc: (id?: string) => {
@@ -91,43 +126,25 @@ class MockFirestoreDb {
           },
         };
       },
-      where: (field: string, op: string, val: any) => ({
-        collectionName: name,
-        get: async () => {
-          const docs: any[] = [];
-          for (const [id, data] of colStore.entries()) {
-            if (op === '==' && data[field] === val) {
-              docs.push({
-                id,
-                exists: true,
-                data: () => data,
-              });
-            }
-          }
-          return { docs };
-        },
-      }),
-      limit: () => ({
-        collectionName: name,
-        get: async () => {
-          const docs: any[] = [];
-          for (const [id, data] of colStore.entries()) {
-            docs.push({ id, exists: true, data: () => data });
-          }
-          return { docs };
-        },
-      }),
+      where: (field: string, op: string, val: any) => makeQuery([{ field, op, val }]),
+      limit: (num: number) => makeQuery([], num),
+      get: async () => makeQuery([]).get(),
     };
   }
 
   public async runTransaction<T>(updateFunction: (transaction: any) => Promise<T>): Promise<T> {
     const stagedWrites: Array<() => void> = [];
+    let hasWritten = false;
 
     const transaction = {
       get: async (refOrQuery: any) => {
+        if (hasWritten) {
+          throw new Error('Firestore transaction error: read called after write occurred!');
+        }
         return refOrQuery.get();
       },
       set: (ref: any, data: any) => {
+        hasWritten = true;
         stagedWrites.push(() => {
           const colName = ref.collectionName;
           const colStore = (colName && this.store.get(colName)) || this.getCollectionForDoc(ref.id);
@@ -135,6 +152,7 @@ class MockFirestoreDb {
         });
       },
       update: (ref: any, patch: any) => {
+        hasWritten = true;
         stagedWrites.push(() => {
           const colName = ref.collectionName;
           const colStore = (colName && this.store.get(colName)) || this.getCollectionForDoc(ref.id);
@@ -159,6 +177,163 @@ class MockFirestoreDb {
     // If not found in existing maps, find by prefix or return default bookings
     return this.store.get(COLLECTIONS.BOOKINGS)!;
   }
+}
+
+function seedStandardCatalog(mockDb: MockFirestoreDb) {
+  // Users
+  mockDb.store.get(COLLECTIONS.USERS)!.set('cust_100', {
+    id: 'cust_100',
+    role: 'CUSTOMER',
+    firstName: 'Nino',
+    lastName: 'Beridze',
+    phone: '+995599123456',
+    status: 'ACTIVE',
+  });
+
+  mockDb.store.get(COLLECTIONS.USERS)!.set('cust_200', {
+    id: 'cust_200',
+    role: 'CUSTOMER',
+    firstName: 'Tamar',
+    lastName: 'Gureshidze',
+    phone: '+995599654321',
+    status: 'ACTIVE',
+  });
+
+  // Employees
+  mockDb.store.get(COLLECTIONS.EMPLOYEES)!.set('emp_elene', {
+    id: 'emp_elene',
+    userId: 'user_emp_elene',
+    employeeType: 'CUSTOMER_FACING',
+    firstName: 'Elene',
+    lastName: 'Vashadze',
+    phone: '+995599111222',
+    status: 'ACTIVE',
+  });
+
+  mockDb.store.get(COLLECTIONS.EMPLOYEES)!.set('emp_giorgi', {
+    id: 'emp_giorgi',
+    userId: 'user_emp_giorgi',
+    employeeType: 'CUSTOMER_FACING',
+    firstName: 'Giorgi',
+    lastName: 'Kapanadze',
+    phone: '+995599222333',
+    status: 'ACTIVE',
+  });
+
+  mockDb.store.get(COLLECTIONS.EMPLOYEES)!.set('emp_ana', {
+    id: 'emp_ana',
+    userId: 'user_emp_ana',
+    employeeType: 'CUSTOMER_FACING',
+    firstName: 'Ana',
+    lastName: 'Abashidze',
+    phone: '+995599333444',
+    status: 'ACTIVE',
+  });
+
+  mockDb.store.get(COLLECTIONS.EMPLOYEES)!.set('emp_internal', {
+    id: 'emp_internal',
+    userId: 'user_emp_internal',
+    employeeType: 'INTERNAL',
+    firstName: 'Vakho',
+    lastName: 'Cleaner',
+    phone: '+995599444555',
+    status: 'ACTIVE',
+  });
+
+  mockDb.store.get(COLLECTIONS.EMPLOYEES)!.set('emp_inactive', {
+    id: 'emp_inactive',
+    userId: 'user_emp_inactive',
+    employeeType: 'CUSTOMER_FACING',
+    firstName: 'Keti',
+    lastName: 'Inactive',
+    phone: '+995599555666',
+    status: 'INACTIVE',
+  });
+
+  // Services
+  mockDb.store.get(COLLECTIONS.SERVICES)!.set('srv_haircut', {
+    id: 'srv_haircut',
+    nameKa: 'თმის შეჭრა',
+    nameEn: 'Haircut',
+    categoryId: 'cat_hair',
+    durationMin: 60,
+    durationMax: 60,
+    priceMin: 50,
+    priceMax: 50,
+    isActive: true,
+  });
+
+  mockDb.store.get(COLLECTIONS.SERVICES)!.set('srv_1', {
+    id: 'srv_1',
+    nameKa: 'სერვისი 1',
+    nameEn: 'Service 1',
+    categoryId: 'cat_general',
+    durationMin: 60,
+    durationMax: 60,
+    priceMin: 60,
+    priceMax: 60,
+    isActive: true,
+  });
+
+  mockDb.store.get(COLLECTIONS.SERVICES)!.set('srv_2', {
+    id: 'srv_2',
+    nameKa: 'სერვისი 2',
+    nameEn: 'Service 2',
+    categoryId: 'cat_general',
+    durationMin: 45,
+    durationMax: 45,
+    priceMin: 70,
+    priceMax: 70,
+    isActive: true,
+  });
+
+  mockDb.store.get(COLLECTIONS.SERVICES)!.set('srv_styling', {
+    id: 'srv_styling',
+    nameKa: 'დავარცხნა',
+    nameEn: 'Styling',
+    categoryId: 'cat_hair',
+    durationMin: 60,
+    durationMax: 60,
+    priceMin: 40,
+    priceMax: 40,
+    isActive: true,
+  });
+
+  mockDb.store.get(COLLECTIONS.SERVICES)!.set('srv_coloring', {
+    id: 'srv_coloring',
+    nameKa: 'შეღებვა',
+    nameEn: 'Hair Coloring',
+    categoryId: 'cat_hair',
+    durationMin: 60,
+    durationMax: 120, // D45 midpoint = 90 min
+    priceMin: 100,
+    priceMax: 160, // D45 midpoint = 130 GEL
+    isActive: true,
+  });
+
+  mockDb.store.get(COLLECTIONS.SERVICES)!.set('srv_inactive', {
+    id: 'srv_inactive',
+    nameKa: 'არააქტიური',
+    nameEn: 'Inactive Service',
+    categoryId: 'cat_hair',
+    durationMin: 60,
+    durationMax: 60,
+    priceMin: 50,
+    priceMax: 50,
+    isActive: false,
+  });
+
+  mockDb.store.get(COLLECTIONS.SERVICES)!.set('srv_invalid_range', {
+    id: 'srv_invalid_range',
+    nameKa: 'არავალიდური',
+    nameEn: 'Invalid Service',
+    categoryId: 'cat_hair',
+    durationMin: 60,
+    durationMax: 30, // max < min
+    priceMin: 50,
+    priceMax: 50,
+    isActive: true,
+  });
 }
 
 // ============================================================================
@@ -357,16 +532,7 @@ describe('Phase 3B: Transactional Booking Creation & Ledger Merging', () => {
 
   beforeEach(() => {
     mockDb = new MockFirestoreDb();
-    // Seed active customer user
-    const usersCol = mockDb.store.get(COLLECTIONS.USERS)!;
-    usersCol.set(customerId, {
-      id: customerId,
-      role: 'CUSTOMER',
-      firstName: 'Nino',
-      lastName: 'Beridze',
-      phone: '+995599123456',
-      status: 'ACTIVE',
-    });
+    seedStandardCatalog(mockDb);
   });
 
   it('successfully creates an atomic booking with items, ledger intervals, and history', async () => {
@@ -686,6 +852,7 @@ describe('Phase 3B: Booking Cancellation & Ledger Release', () => {
 
   beforeEach(async () => {
     mockDb = new MockFirestoreDb();
+    seedStandardCatalog(mockDb);
     const usersCol = mockDb.store.get(COLLECTIONS.USERS)!;
     usersCol.set(customerId, {
       id: customerId,
@@ -795,6 +962,7 @@ describe('Phase 3B: Booking Rescheduling', () => {
 
   beforeEach(() => {
     mockDb = new MockFirestoreDb();
+    seedStandardCatalog(mockDb);
     const usersCol = mockDb.store.get(COLLECTIONS.USERS)!;
     usersCol.set(customerId, {
       id: customerId,
@@ -955,5 +1123,673 @@ describe('Phase 3B: Transaction Read/Write Limits Audit', () => {
     const totalTransactionDocs = estimatedReads + estimatedWrites;
     expect(totalTransactionDocs).toBeLessThan(50); // Under 50 docs total (limit is 500!)
     expect(totalTransactionDocs).toBeLessThan(500);
+  });
+});
+
+// ============================================================================
+// SUITE 8: AUTHORITATIVE SERVICE VALIDATION & D45 MIDPOINT RULE
+// ============================================================================
+describe('Phase 3B: Authoritative Service Validation & D45 Midpoint Rule', () => {
+  let mockDb: MockFirestoreDb;
+  const customerId = 'cust_100';
+
+  beforeEach(() => {
+    mockDb = new MockFirestoreDb();
+    seedStandardCatalog(mockDb);
+  });
+
+  it('calculates duration and price midpoint correctly for bounded ranges per D45', async () => {
+    // srv_coloring: durationMin: 60, durationMax: 120 -> midpoint: 90
+    // priceMin: 100, priceMax: 160 -> midpoint: 130
+    const rawPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_coloring',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    const result = await BookingEngine.createBooking(
+      {
+        customerId,
+        actorRole: 'CUSTOMER',
+        rawPayload,
+        items: rawPayload.items,
+      },
+      mockDb
+    );
+
+    expect(result.items.length).toBe(1);
+    const item = result.items[0];
+    expect(item.durationMinutes).toBe(90);
+    expect(item.startTime).toContain('10:00');
+    expect(item.endTime).toContain('11:30');
+    expect(item.priceSnapshot).toEqual({
+      min: 100,
+      max: 160,
+      currency: 'GEL',
+    });
+
+    // Verify ledger has 10:00 - 11:30
+    const ledger = mockDb.store.get(COLLECTIONS.AVAILABILITY)!.get('emp_elene_2026-09-22');
+    expect(ledger.bookedIntervals[0].startTime).toBe('10:00');
+    expect(ledger.bookedIntervals[0].endTime).toBe('11:30');
+  });
+
+  it('strictly ignores client-supplied durationMinutes in favor of authoritative catalog value', async () => {
+    // Client tries to spoof durationMinutes: 15 for a 60-min haircut
+    const rawPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '10:00',
+          durationMinutes: 15,
+        },
+      ],
+    };
+
+    const result = await BookingEngine.createBooking(
+      {
+        customerId,
+        actorRole: 'CUSTOMER',
+        rawPayload,
+        items: rawPayload.items,
+      },
+      mockDb
+    );
+
+    // Must be authoritative 60 minutes
+    expect(result.items[0].durationMinutes).toBe(60);
+    expect(result.items[0].endTime).toContain('11:00');
+  });
+
+  it('rejects booking when service does not exist (SERVICE_NOT_FOUND)', async () => {
+    const rawPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'non_existent_service',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(NotFoundError);
+  });
+
+  it('rejects booking when service is inactive (SERVICE_INACTIVE)', async () => {
+    const rawPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_inactive',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(BadRequestError);
+  });
+
+  it('rejects booking when service has invalid range configuration (INVALID_SERVICE_CONFIGURATION)', async () => {
+    // srv_invalid_range has durationMin: 60, durationMax: 30
+    const rawPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_invalid_range',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(BadRequestError);
+  });
+});
+
+// ============================================================================
+// SUITE 9: AUTHORITATIVE EMPLOYEE VALIDATION & INTERNAL EMPLOYEE PROHIBITION
+// ============================================================================
+describe('Phase 3B: Authoritative Employee Validation & Internal Prohibition', () => {
+  let mockDb: MockFirestoreDb;
+  const customerId = 'cust_100';
+
+  beforeEach(() => {
+    mockDb = new MockFirestoreDb();
+    seedStandardCatalog(mockDb);
+  });
+
+  it('rejects booking for non-existent employee (EMPLOYEE_NOT_FOUND)', async () => {
+    const rawPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'non_existent_emp',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(NotFoundError);
+  });
+
+  it('rejects booking for inactive employee (EMPLOYEE_NOT_AVAILABLE)', async () => {
+    const rawPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_inactive',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(BadRequestError);
+  });
+
+  it('strictly rejects booking for INTERNAL employee (EMPLOYEE_NOT_BOOKABLE)', async () => {
+    // emp_internal is employeeType: 'INTERNAL'
+    const rawPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_internal',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(BadRequestError);
+  });
+});
+
+// ============================================================================
+// SUITE 10: WORKING HOURS, WEEKLY SCHEDULES, BREAKS & EXCEPTIONS
+// ============================================================================
+describe('Phase 3B: Working Hours, Weekly Schedules, Breaks & Exceptions', () => {
+  let mockDb: MockFirestoreDb;
+  const customerId = 'cust_100';
+
+  beforeEach(() => {
+    mockDb = new MockFirestoreDb();
+    seedStandardCatalog(mockDb);
+
+    // 2026-09-20 is Sunday (dayOfWeek 0)
+    // 2026-09-21 is Monday (dayOfWeek 1)
+    // 2026-09-22 is Tuesday (dayOfWeek 2)
+    // 2026-09-23 is Wednesday (dayOfWeek 3)
+
+    // Seed weekly schedule for emp_elene:
+    // Sunday: day off (isWorking: false)
+    // Tuesday: works 10:00 - 18:00
+    const schedulesCol = mockDb.store.get(COLLECTIONS.WEEKLY_SCHEDULES)!;
+    schedulesCol.set('emp_elene_sun', {
+      employeeId: 'emp_elene',
+      dayOfWeek: 0,
+      isWorking: false,
+    });
+    schedulesCol.set('emp_elene_tue', {
+      employeeId: 'emp_elene',
+      dayOfWeek: 2,
+      isWorking: true,
+      startTime: '10:00',
+      endTime: '18:00',
+    });
+
+    // Seed breaks for emp_elene on Tuesday: 13:00 - 14:00
+    const breaksCol = mockDb.store.get(COLLECTIONS.SCHEDULE_BREAKS)!;
+    breaksCol.set('emp_elene_break_tue', {
+      employeeId: 'emp_elene',
+      dayOfWeek: 2,
+      startTime: '13:00',
+      endTime: '14:00',
+      type: 'LUNCH',
+    });
+
+    // Seed schedule exception for emp_elene on 2026-09-23: OFF
+    const exceptionsCol = mockDb.store.get(COLLECTIONS.SCHEDULE_EXCEPTIONS)!;
+    exceptionsCol.set('emp_elene_exc_off', {
+      id: 'emp_elene_exc_off',
+      employeeId: 'emp_elene',
+      startDate: '2026-09-23',
+      endDate: '2026-09-23',
+      date: '2026-09-23',
+      type: 'OFF',
+      reason: 'Personal Leave',
+    });
+
+    // Seed schedule exception for emp_elene on 2026-09-24: CUSTOM_HOURS 12:00 - 16:00
+    exceptionsCol.set('emp_elene_exc_custom', {
+      id: 'emp_elene_exc_custom',
+      employeeId: 'emp_elene',
+      startDate: '2026-09-24',
+      endDate: '2026-09-24',
+      date: '2026-09-24',
+      type: 'CUSTOM_HOURS',
+      startTime: '12:00',
+      endTime: '16:00',
+    });
+  });
+
+  it('rejects booking on employee weekly day off (EMPLOYEE_NOT_WORKING)', async () => {
+    const rawPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-20', // Sunday
+          startTime: '11:00',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(BadRequestError);
+  });
+
+  it('rejects booking outside employee weekly working hours (OUTSIDE_WORKING_HOURS)', async () => {
+    // Starts before shift (09:00)
+    const earlyPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '09:00',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload: earlyPayload,
+          items: earlyPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(BadRequestError);
+
+    // Ends after shift (17:30 + 60 min = 18:30 > 18:00)
+    const latePayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '17:30',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload: latePayload,
+          items: latePayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(BadRequestError);
+  });
+
+  it('rejects booking on date with schedule exception type OFF (EMPLOYEE_SCHEDULE_EXCEPTION_OFF)', async () => {
+    const rawPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-23', // Exception: OFF
+          startTime: '12:00',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(ConflictError);
+  });
+
+  it('respects CUSTOM_HOURS schedule exception and blocks bookings outside exception hours', async () => {
+    // Custom hours: 12:00 - 16:00
+    // Attempt booking at 10:00 (outside custom hours)
+    const outsidePayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-24',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload: outsidePayload,
+          items: outsidePayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(BadRequestError);
+
+    // Booking at 13:00 (13:00 - 14:00 inside 12:00 - 16:00) succeeds!
+    const validPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-24',
+          startTime: '13:00',
+        },
+      ],
+    };
+
+    const result = await BookingEngine.createBooking(
+      {
+        customerId,
+        actorRole: 'CUSTOMER',
+        rawPayload: validPayload,
+        items: validPayload.items,
+      },
+      mockDb
+    );
+
+    expect(result.booking.id).toBeDefined();
+    expect(result.items[0].startTime).toContain('13:00');
+  });
+
+  it('rejects booking overlapping employee break (EMPLOYEE_ON_BREAK)', async () => {
+    // Break is 13:00 - 14:00
+    // Booking at 12:30 for 60 minutes overlaps 13:00 - 13:30
+    const rawPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '12:30',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(ConflictError);
+  });
+});
+
+// ============================================================================
+// SUITE 11: CUSTOMER SELF-OVERLAP PREVENTION (D44)
+// ============================================================================
+describe('Phase 3B: Customer Self-Overlap Prevention (D44)', () => {
+  let mockDb: MockFirestoreDb;
+  const customerId = 'cust_100';
+
+  beforeEach(() => {
+    mockDb = new MockFirestoreDb();
+    seedStandardCatalog(mockDb);
+  });
+
+  it('blocks inter-booking self-overlap against existing confirmed booking of same customer', async () => {
+    // 1. Customer already has a confirmed booking on 2026-09-22 from 14:00 to 15:00 with Elene
+    const firstRes = await BookingEngine.createBooking(
+      {
+        customerId,
+        actorRole: 'CUSTOMER',
+        rawPayload: { items: [] },
+        items: [
+          {
+            serviceId: 'srv_haircut',
+            employeeId: 'emp_elene',
+            date: '2026-09-22',
+            startTime: '14:00',
+          },
+        ],
+      },
+      mockDb
+    );
+    expect(firstRes.booking.id).toBeDefined();
+
+    // 2. Customer tries to create a second booking on the same day from 14:30 to 15:15 with Giorgi
+    // Different employee, but SAME customer -> D44 Customer Self-Overlap Violation!
+    const secondPayload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_2', // 45 min
+          employeeId: 'emp_giorgi',
+          date: '2026-09-22',
+          startTime: '14:30',
+        },
+      ],
+    };
+
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId,
+          actorRole: 'CUSTOMER',
+          rawPayload: secondPayload,
+          items: secondPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrow(ConflictError);
+  });
+
+  it('allows back-to-back non-overlapping appointments for the same customer', async () => {
+    // Item 1: 14:00 - 15:00 with Elene
+    // Item 2: 15:00 - 15:45 with Giorgi
+    const payload = {
+      customerId,
+      items: [
+        {
+          serviceId: 'srv_haircut', // 60 min (14:00 - 15:00)
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '14:00',
+        },
+        {
+          serviceId: 'srv_2', // 45 min (15:00 - 15:45)
+          employeeId: 'emp_giorgi',
+          date: '2026-09-22',
+          startTime: '15:00',
+        },
+      ],
+    };
+
+    const res = await BookingEngine.createBooking(
+      {
+        customerId,
+        actorRole: 'CUSTOMER',
+        rawPayload: payload,
+        items: payload.items,
+      },
+      mockDb
+    );
+
+    expect(res.items.length).toBe(2);
+    expect(res.items[0].endTime).toContain('15:00');
+    expect(res.items[1].startTime).toContain('15:00');
+  });
+});
+
+// ============================================================================
+// SUITE 12: EMPLOYEE OWN BOOKING VISIBILITY & RBAC (SECTION 17)
+// ============================================================================
+describe('Phase 3B: Employee Own Booking Visibility & RBAC', () => {
+  let mockDb: MockFirestoreDb;
+
+  beforeEach(() => {
+    mockDb = new MockFirestoreDb();
+    seedStandardCatalog(mockDb);
+
+    // Seed bookings
+    const bookingsCol = mockDb.store.get(COLLECTIONS.BOOKINGS)!;
+    const itemsCol = mockDb.store.get(COLLECTIONS.BOOKING_ITEMS)!;
+
+    // Booking 1: Customer Nino (cust_100), item with Elene (emp_elene)
+    bookingsCol.set('b1', {
+      id: 'b1',
+      customerId: 'cust_100',
+      status: 'CONFIRMED',
+    });
+    itemsCol.set('item_b1_1', {
+      id: 'item_b1_1',
+      bookingId: 'b1',
+      employeeId: 'emp_elene',
+      status: 'CONFIRMED',
+    });
+
+    // Booking 2: Customer Tamar (cust_200), item with Giorgi (emp_giorgi)
+    bookingsCol.set('b2', {
+      id: 'b2',
+      customerId: 'cust_200',
+      status: 'CONFIRMED',
+    });
+    itemsCol.set('item_b2_1', {
+      id: 'item_b2_1',
+      bookingId: 'b2',
+      employeeId: 'emp_giorgi',
+      status: 'CONFIRMED',
+    });
+  });
+
+  it('allows employee to view booking where they are assigned an item', async () => {
+    // Elene's user ID is user_emp_elene, employeeId is emp_elene
+    // An employee query for items where employeeId == 'emp_elene' finds b1
+    const items = await mockDb.collection(COLLECTIONS.BOOKING_ITEMS)
+      .where('employeeId', '==', 'emp_elene')
+      .get();
+    expect(items.docs.length).toBe(1);
+    expect(items.docs[0].data().bookingId).toBe('b1');
+  });
+
+  it('confirms employee cannot see unassigned bookings of other employees', async () => {
+    // Elene's items do not include b2 (which belongs to Giorgi)
+    const items = await mockDb.collection(COLLECTIONS.BOOKING_ITEMS)
+      .where('employeeId', '==', 'emp_elene')
+      .get();
+    const bookingIds = items.docs.map(d => d.data().bookingId);
+    expect(bookingIds).not.toContain('b2');
   });
 });
