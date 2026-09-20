@@ -32,6 +32,7 @@ import {
   User,
   Employee,
   Service,
+  EmployeeService,
   WeeklySchedule,
   ScheduleBreak,
   ScheduleException,
@@ -236,6 +237,18 @@ export class BookingEngine {
         employeeDocsMap.set(eId, eDoc);
       }
 
+      // 4b. Read EmployeeService relationships for each employee (Blocker A)
+      const employeeServicesMap = new Map<string, EmployeeService[]>();
+      for (const eId of uniqueEmployeeIds) {
+        const esSnap = await transaction.get(
+          adminDb.collection(COLLECTIONS.EMPLOYEE_SERVICES).where('employeeId', '==', eId)
+        );
+        const esList = esSnap.docs
+          ? esSnap.docs.map((d: any) => d.data() as EmployeeService)
+          : [];
+        employeeServicesMap.set(eId, esList);
+      }
+
       // 5. Read Schedules, Breaks, and Exceptions for each employee
       const schedulesMap = new Map<string, WeeklySchedule[]>();
       const breaksMap = new Map<string, ScheduleBreak[]>();
@@ -378,6 +391,22 @@ export class BookingEngine {
           throw new BadRequestError(
             `Employee #${item.employeeId} is an internal employee and cannot be booked`,
             'EMPLOYEE_NOT_BOOKABLE'
+          );
+        }
+
+        // Blocker A: Authoritative Employee ↔ Service Eligibility Validation
+        const empAssignedServices = employeeServicesMap.get(item.employeeId) || [];
+        const assignment = empAssignedServices.find((es) => es.serviceId === item.serviceId);
+        if (!assignment) {
+          throw new BadRequestError(
+            `Employee #${item.employeeId} is not assigned to service #${item.serviceId}`,
+            'EMPLOYEE_SERVICE_NOT_ASSIGNED'
+          );
+        }
+        if (!assignment.isActive) {
+          throw new BadRequestError(
+            `Employee #${item.employeeId} assignment to service #${item.serviceId} is inactive`,
+            'EMPLOYEE_SERVICE_INACTIVE'
           );
         }
 
@@ -987,6 +1016,18 @@ export class BookingEngine {
         );
       }
 
+      // Read employeeServices for target employees (Blocker A)
+      const targetEmployeeServicesMap = new Map<string, EmployeeService[]>();
+      for (const eId of targetEmployeeIds) {
+        const esSnap = await transaction.get(
+          adminDb.collection(COLLECTIONS.EMPLOYEE_SERVICES).where('employeeId', '==', eId)
+        );
+        targetEmployeeServicesMap.set(
+          eId,
+          esSnap.docs ? esSnap.docs.map((d: any) => d.data() as EmployeeService) : []
+        );
+      }
+
       // Read other active bookings of this customer (excluding this bookingId) for D44 Customer Self-Overlap
       const otherCustBookingsSnap = await transaction.get(
         adminDb
@@ -1049,6 +1090,22 @@ export class BookingEngine {
           throw new BadRequestError(
             `Employee #${newEmpId} is an internal employee and cannot be booked`,
             'EMPLOYEE_NOT_BOOKABLE'
+          );
+        }
+
+        // Blocker A: Authoritative Target Employee ↔ Service Eligibility Validation
+        const targetAssignedServices = targetEmployeeServicesMap.get(newEmpId) || [];
+        const assignment = targetAssignedServices.find((es) => es.serviceId === item.serviceId);
+        if (!assignment) {
+          throw new BadRequestError(
+            `Employee #${newEmpId} is not assigned to service #${item.serviceId}`,
+            'EMPLOYEE_SERVICE_NOT_ASSIGNED'
+          );
+        }
+        if (!assignment.isActive) {
+          throw new BadRequestError(
+            `Employee #${newEmpId} assignment to service #${item.serviceId} is inactive`,
+            'EMPLOYEE_SERVICE_INACTIVE'
           );
         }
 

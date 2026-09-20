@@ -334,6 +334,24 @@ function seedStandardCatalog(mockDb: MockFirestoreDb) {
     priceMax: 50,
     isActive: true,
   });
+
+  // Employee-Service Eligibility Mappings (Active assignments for standard testing)
+  const standardServices = ['srv_haircut', 'srv_1', 'srv_2', 'srv_styling', 'srv_coloring', 'srv_invalid_range'];
+  const standardEmployees = ['emp_elene', 'emp_giorgi', 'emp_ana'];
+
+  for (const empId of standardEmployees) {
+    for (const srvId of standardServices) {
+      const mappingId = `${empId}_${srvId}`;
+      mockDb.store.get(COLLECTIONS.EMPLOYEE_SERVICES)!.set(mappingId, {
+        id: mappingId,
+        employeeId: empId,
+        serviceId: srvId,
+        isActive: true,
+        createdAt: '2026-03-01T10:00:00.000Z',
+        updatedAt: '2026-03-01T10:00:00.000Z',
+      });
+    }
+  }
 }
 
 // ============================================================================
@@ -1791,5 +1809,409 @@ describe('Phase 3B: Employee Own Booking Visibility & RBAC', () => {
       .get();
     const bookingIds = items.docs.map(d => d.data().bookingId);
     expect(bookingIds).not.toContain('b2');
+  });
+});
+
+// ============================================================================
+// SUITE 9: BLOCKER A — EMPLOYEE ↔ SERVICE ELIGIBILITY ENFORCEMENT
+// ============================================================================
+describe('Blocker A: Employee ↔ Service Eligibility Enforcement', () => {
+  let mockDb: MockFirestoreDb;
+
+  beforeEach(() => {
+    mockDb = new MockFirestoreDb();
+    seedStandardCatalog(mockDb);
+
+    // Clear existing bookings & ledgers
+    mockDb.store.get(COLLECTIONS.BOOKINGS)!.clear();
+    mockDb.store.get(COLLECTIONS.BOOKING_ITEMS)!.clear();
+    mockDb.store.get(COLLECTIONS.AVAILABILITY)!.clear();
+    mockDb.store.get(COLLECTIONS.IDEMPOTENCY)!.clear();
+
+    // Specific eligibility setup for Suite 9:
+    // emp_elene is assigned to srv_haircut (ACTIVE)
+    // emp_giorgi is assigned to srv_coloring (ACTIVE)
+    // emp_ana is assigned to srv_styling but INACTIVE (isActive: false)
+    mockDb.store.get(COLLECTIONS.EMPLOYEE_SERVICES)!.clear();
+
+    mockDb.store.get(COLLECTIONS.EMPLOYEE_SERVICES)!.set('es_elene_haircut', {
+      id: 'es_elene_haircut',
+      employeeId: 'emp_elene',
+      serviceId: 'srv_haircut',
+      isActive: true,
+      createdAt: '2026-09-01T10:00:00.000Z',
+      updatedAt: '2026-09-01T10:00:00.000Z',
+    });
+
+    mockDb.store.get(COLLECTIONS.EMPLOYEE_SERVICES)!.set('es_giorgi_coloring', {
+      id: 'es_giorgi_coloring',
+      employeeId: 'emp_giorgi',
+      serviceId: 'srv_coloring',
+      isActive: true,
+      createdAt: '2026-09-01T10:00:00.000Z',
+      updatedAt: '2026-09-01T10:00:00.000Z',
+    });
+
+    mockDb.store.get(COLLECTIONS.EMPLOYEE_SERVICES)!.set('es_ana_styling_inactive', {
+      id: 'es_ana_styling_inactive',
+      employeeId: 'emp_ana',
+      serviceId: 'srv_styling',
+      isActive: false, // Inactive mapping
+      createdAt: '2026-09-01T10:00:00.000Z',
+      updatedAt: '2026-09-01T10:00:00.000Z',
+    });
+  });
+
+  it('8.1: allows booking when employee is actively assigned to the requested service', async () => {
+    const rawPayload = {
+      customerId: 'cust_100',
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    const result = await BookingEngine.createBooking(
+      {
+        customerId: 'cust_100',
+        actorRole: 'CUSTOMER',
+        rawPayload,
+        items: rawPayload.items,
+      },
+      mockDb
+    );
+
+    expect(result.booking.id).toBeDefined();
+    expect(result.booking.status).toBe('CONFIRMED');
+    expect(result.items.length).toBe(1);
+    expect(result.items[0].serviceId).toBe('srv_haircut');
+    expect(result.items[0].employeeId).toBe('emp_elene');
+
+    // Ledger must be updated
+    const ledger = mockDb.store.get(COLLECTIONS.AVAILABILITY)!.get('emp_elene_2026-09-22');
+    expect(ledger).toBeDefined();
+    expect(ledger.bookedIntervals.length).toBe(1);
+  });
+
+  it('8.2: rejects booking when employee has NO assignment to the requested service', async () => {
+    const rawPayload = {
+      customerId: 'cust_100',
+      items: [
+        {
+          serviceId: 'srv_coloring',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    // emp_elene is NOT assigned to srv_coloring
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId: 'cust_100',
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrowError(/not assigned to service/);
+
+    // Verify ZERO mutations
+    expect(mockDb.store.get(COLLECTIONS.BOOKINGS)!.size).toBe(0);
+    expect(mockDb.store.get(COLLECTIONS.BOOKING_ITEMS)!.size).toBe(0);
+    expect(mockDb.store.get(COLLECTIONS.AVAILABILITY)!.size).toBe(0);
+  });
+
+  it('8.3: rejects booking when employee assignment to service exists but is INACTIVE', async () => {
+    const rawPayload = {
+      customerId: 'cust_100',
+      items: [
+        {
+          serviceId: 'srv_styling',
+          employeeId: 'emp_ana',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    // emp_ana has assignment to srv_styling but isActive === false
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId: 'cust_100',
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrowError(/inactive/);
+
+    // Verify ZERO mutations
+    expect(mockDb.store.get(COLLECTIONS.BOOKINGS)!.size).toBe(0);
+    expect(mockDb.store.get(COLLECTIONS.BOOKING_ITEMS)!.size).toBe(0);
+    expect(mockDb.store.get(COLLECTIONS.AVAILABILITY)!.size).toBe(0);
+  });
+
+  it('8.4: rejects booking when cross-matching wrong employee for service', async () => {
+    const rawPayload = {
+      customerId: 'cust_100',
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_giorgi',
+          date: '2026-09-22',
+          startTime: '11:00',
+        },
+      ],
+    };
+
+    // emp_giorgi is assigned to srv_coloring, NOT srv_haircut
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId: 'cust_100',
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrowError(/not assigned to service/);
+
+    expect(mockDb.store.get(COLLECTIONS.BOOKINGS)!.size).toBe(0);
+    expect(mockDb.store.get(COLLECTIONS.AVAILABILITY)!.size).toBe(0);
+  });
+
+  it('8.5: atomically rejects multi-item booking if even one item is ineligible (all-or-nothing)', async () => {
+    const rawPayload = {
+      customerId: 'cust_100',
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+        {
+          serviceId: 'srv_styling',
+          employeeId: 'emp_giorgi',
+          date: '2026-09-22',
+          startTime: '12:00',
+        },
+      ],
+    };
+
+    // Item 1: emp_elene + srv_haircut (ELIGIBLE)
+    // Item 2: emp_giorgi + srv_styling (INELIGIBLE - not assigned)
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId: 'cust_100',
+          actorRole: 'CUSTOMER',
+          rawPayload,
+          items: rawPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrowError(/not assigned to service/);
+
+    // Atomic: Item 1 must NOT be booked, no ledgers mutated
+    expect(mockDb.store.get(COLLECTIONS.BOOKINGS)!.size).toBe(0);
+    expect(mockDb.store.get(COLLECTIONS.BOOKING_ITEMS)!.size).toBe(0);
+    expect(mockDb.store.get(COLLECTIONS.AVAILABILITY)!.size).toBe(0);
+  });
+
+  it('8.6: allows rescheduling to a new eligible employee/service', async () => {
+    const rawPayload = {
+      customerId: 'cust_100',
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    // First, book Elene for Haircut
+    const created = await BookingEngine.createBooking(
+      {
+        customerId: 'cust_100',
+        actorRole: 'CUSTOMER',
+        rawPayload,
+        items: rawPayload.items,
+      },
+      mockDb
+    );
+
+    // Now assign emp_giorgi to srv_haircut as well
+    mockDb.store.get(COLLECTIONS.EMPLOYEE_SERVICES)!.set('es_giorgi_haircut', {
+      id: 'es_giorgi_haircut',
+      employeeId: 'emp_giorgi',
+      serviceId: 'srv_haircut',
+      isActive: true,
+      createdAt: '2026-09-01T10:00:00.000Z',
+      updatedAt: '2026-09-01T10:00:00.000Z',
+    });
+
+    // Reschedule item to Giorgi at 14:00
+    const reschedResult = await BookingEngine.rescheduleBooking(
+      {
+        bookingId: created.booking.id,
+        actorUserId: 'cust_100',
+        actorRole: 'CUSTOMER',
+        reschedules: [
+          {
+            bookingItemId: created.items[0].id,
+            newEmployeeId: 'emp_giorgi',
+            newDate: '2026-09-22',
+            newStartTime: '14:00',
+          },
+        ],
+      },
+      mockDb
+    );
+
+    expect(reschedResult.items[0].employeeId).toBe('emp_giorgi');
+    expect(reschedResult.items[0].startTime).toBe('2026-09-22T14:00:00+04:00');
+
+    // Old ledger for Elene should have interval removed
+    const oldLedger = mockDb.store.get(COLLECTIONS.AVAILABILITY)!.get('emp_elene_2026-09-22');
+    expect(oldLedger.bookedIntervals.length).toBe(0);
+
+    // New ledger for Giorgi should have interval booked
+    const newLedger = mockDb.store.get(COLLECTIONS.AVAILABILITY)!.get('emp_giorgi_2026-09-22');
+    expect(newLedger.bookedIntervals.length).toBe(1);
+    expect(newLedger.bookedIntervals[0].startTime).toBe('14:00');
+  });
+
+  it('8.7: rejects rescheduling to an ineligible employee and leaves original booking and ledgers untouched', async () => {
+    const rawPayload = {
+      customerId: 'cust_100',
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene',
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    // First, book Elene for Haircut
+    const created = await BookingEngine.createBooking(
+      {
+        customerId: 'cust_100',
+        actorRole: 'CUSTOMER',
+        rawPayload,
+        items: rawPayload.items,
+      },
+      mockDb
+    );
+
+    // Giorgi is NOT assigned to srv_haircut. Rescheduling to Giorgi must fail!
+    await expect(
+      BookingEngine.rescheduleBooking(
+        {
+          bookingId: created.booking.id,
+          actorUserId: 'cust_100',
+          actorRole: 'CUSTOMER',
+          reschedules: [
+            {
+              bookingItemId: created.items[0].id,
+              newEmployeeId: 'emp_giorgi',
+              newDate: '2026-09-22',
+              newStartTime: '14:00',
+            },
+          ],
+        },
+        mockDb
+      )
+    ).rejects.toThrowError(/not assigned to service/);
+
+    // Original booking remains unchanged
+    const bookingDoc = mockDb.store.get(COLLECTIONS.BOOKINGS)!.get(created.booking.id);
+    expect(bookingDoc.status).toBe('CONFIRMED');
+
+    const itemDoc = mockDb.store.get(COLLECTIONS.BOOKING_ITEMS)!.get(created.items[0].id);
+    expect(itemDoc.employeeId).toBe('emp_elene');
+    expect(itemDoc.startTime).toBe('2026-09-22T10:00:00+04:00');
+
+    // Elene's ledger still intact
+    const eleneLedger = mockDb.store.get(COLLECTIONS.AVAILABILITY)!.get('emp_elene_2026-09-22');
+    expect(eleneLedger.bookedIntervals.length).toBe(1);
+
+    // Giorgi's ledger never touched
+    const giorgiLedger = mockDb.store.get(COLLECTIONS.AVAILABILITY)!.get('emp_giorgi_2026-09-22');
+    expect(giorgiLedger).toBeUndefined();
+  });
+
+  it('8.8: failed booking due to ineligibility does not save an idempotency success record', async () => {
+    const idempotencyKey = 'suite9_idem_key_1';
+    const invalidPayload = {
+      customerId: 'cust_100',
+      items: [
+        {
+          serviceId: 'srv_coloring',
+          employeeId: 'emp_elene', // Ineligible
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    // First attempt fails due to ineligibility
+    await expect(
+      BookingEngine.createBooking(
+        {
+          customerId: 'cust_100',
+          actorRole: 'CUSTOMER',
+          idempotencyKey,
+          rawPayload: invalidPayload,
+          items: invalidPayload.items,
+        },
+        mockDb
+      )
+    ).rejects.toThrowError(/not assigned to service/);
+
+    // No idempotency record stored
+    expect(mockDb.store.get(COLLECTIONS.IDEMPOTENCY)!.size).toBe(0);
+
+    // Now caller retries with the same idempotency key using a valid eligible assignment
+    const validPayload = {
+      customerId: 'cust_100',
+      items: [
+        {
+          serviceId: 'srv_haircut',
+          employeeId: 'emp_elene', // Eligible
+          date: '2026-09-22',
+          startTime: '10:00',
+        },
+      ],
+    };
+
+    const retryResult = await BookingEngine.createBooking(
+      {
+        customerId: 'cust_100',
+        actorRole: 'CUSTOMER',
+        idempotencyKey,
+        rawPayload: validPayload,
+        items: validPayload.items,
+      },
+      mockDb
+    );
+
+    expect(retryResult.booking.status).toBe('CONFIRMED');
+    expect(mockDb.store.get(COLLECTIONS.IDEMPOTENCY)!.size).toBe(1);
   });
 });
