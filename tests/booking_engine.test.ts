@@ -7,7 +7,7 @@
  * - Phase 3B: Booking Engine, Ledger Concurrency, D42 Idempotency, Cancellation, Rescheduling, Notifications
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   requireCompleteProfile,
   requireAuthenticatedUser,
@@ -178,6 +178,17 @@ class MockFirestoreDb {
     return this.store.get(COLLECTIONS.BOOKINGS)!;
   }
 }
+
+// Freeze system time deterministically to 09:00 Asia/Tbilisi on 2026-09-22
+// so advance lead time (>= 30 min) passes regardless of wall-clock execution time.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-09-22T05:00:00.000Z'));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function seedStandardCatalog(mockDb: MockFirestoreDb) {
   // Users

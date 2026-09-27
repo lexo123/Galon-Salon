@@ -12,6 +12,8 @@ import authRoutes from './routes/auth.ts';
 import userRoutes from './routes/users.ts';
 import bookingRoutes from './routes/bookings.ts';
 import employeeRoutes from './routes/employees.ts';
+import serviceRoutes from './routes/services.ts';
+import availabilityRoutes from './routes/availability.ts';
 import { errorHandler } from './utils/errors.ts';
 import { logger } from './utils/logger.ts';
 import { initializeFirebaseAdmin } from './config/firebaseAdmin.ts';
@@ -38,6 +40,8 @@ export function createExpressApp(): Express {
   app.use('/api/users', userRoutes);
   app.use('/api/bookings', bookingRoutes);
   app.use('/api/employees', employeeRoutes);
+  app.use('/api/services', serviceRoutes);
+  app.use('/api/availability', availabilityRoutes);
 
   // Centralized Error Handler
   app.use(errorHandler);
