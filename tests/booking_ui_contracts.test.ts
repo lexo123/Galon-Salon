@@ -4,7 +4,7 @@
  *
  * Automated Tests for Customer-Facing Booking UI Backend Contracts:
  * - GET /api/services (Service Catalog & Eligibility)
- * - GET /api/availability (Feasible Slot Calculation)
+ * - GET /api/availability (D3 Grouped Employee Availability & D4 Packed Slot Calculation)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -203,6 +203,23 @@ function seedContractTestData(mockDb: MockFirestoreDb) {
     updatedAt: '2026-09-01T00:00:00.000Z',
   });
 
+  mockDb.store.get(COLLECTIONS.SERVICES)!.set('srv_manicure', {
+    id: 'srv_manicure',
+    categoryId: 'cat_nails',
+    nameKa: 'მანიკიური',
+    nameEn: 'Manicure',
+    descriptionKa: 'კლასიკური მანიკიური',
+    descriptionEn: 'Classic manicure',
+    displayOrder: 3,
+    durationMin: 45,
+    durationMax: 45,
+    priceMin: 40,
+    priceMax: 40,
+    isActive: true,
+    createdAt: '2026-09-01T00:00:00.000Z',
+    updatedAt: '2026-09-01T00:00:00.000Z',
+  });
+
   mockDb.store.get(COLLECTIONS.SERVICES)!.set('srv_inactive', {
     id: 'srv_inactive',
     categoryId: 'cat_hair',
@@ -210,7 +227,7 @@ function seedContractTestData(mockDb: MockFirestoreDb) {
     nameEn: 'Inactive Service',
     descriptionKa: '',
     descriptionEn: '',
-    displayOrder: 3,
+    displayOrder: 4,
     durationMin: 60,
     durationMax: 60,
     priceMin: 50,
@@ -225,7 +242,7 @@ function seedContractTestData(mockDb: MockFirestoreDb) {
     nameEn: 'Invalid Service',
     descriptionKa: '',
     descriptionEn: '',
-    displayOrder: 4,
+    displayOrder: 5,
     durationMin: 90,
     durationMax: 30, // invalid range: max < min
     priceMin: 50,
@@ -252,6 +269,13 @@ function seedContractTestData(mockDb: MockFirestoreDb) {
     id: 'es_elene_coloring',
     employeeId: 'emp_elene',
     serviceId: 'srv_coloring',
+    isActive: true,
+  });
+
+  mockDb.store.get(COLLECTIONS.EMPLOYEE_SERVICES)!.set('es_elene_manicure', {
+    id: 'es_elene_manicure',
+    employeeId: 'emp_elene',
+    serviceId: 'srv_manicure',
     isActive: true,
   });
 
@@ -307,11 +331,11 @@ describe('Booking UI Backend Contract: GET /api/services', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.status).toBe('ok');
-    expect(res.body.services).toHaveLength(2);
+    expect(res.body.services).toHaveLength(3);
 
-    // srv_coloring has displayOrder: 1, srv_haircut has displayOrder: 2
     expect(res.body.services[0].id).toBe('srv_coloring');
     expect(res.body.services[1].id).toBe('srv_haircut');
+    expect(res.body.services[2].id).toBe('srv_manicure');
   });
 
   it('computes authoritative D45 durationMinutes midpoint and price object without exposing raw fields', async () => {
@@ -351,19 +375,16 @@ describe('Booking UI Backend Contract: GET /api/services', () => {
     const haircut = services.find((s) => s.id === 'srv_haircut')!;
     const coloring = services.find((s) => s.id === 'srv_coloring')!;
 
-    // Haircut has active assignments for emp_elene, emp_giorgi, emp_internal, emp_inactive
-    // Only emp_elene and emp_giorgi are CUSTOMER_FACING + ACTIVE
     expect(haircut.eligibleEmployeeIds).toEqual(['emp_elene', 'emp_giorgi']);
     expect(haircut.eligibleEmployeeIds).not.toContain('emp_internal');
     expect(haircut.eligibleEmployeeIds).not.toContain('emp_inactive');
 
-    // Coloring has active assignment for emp_elene and inactive assignment for emp_giorgi
     expect(coloring.eligibleEmployeeIds).toEqual(['emp_elene']);
   });
 });
 
 // ============================================================================
-// SUITE 2: GET /api/availability — AVAILABILITY CONTRACT
+// SUITE 2: GET /api/availability — AVAILABILITY CONTRACT (D3 & D4)
 // ============================================================================
 describe('Booking UI Backend Contract: GET /api/availability', () => {
   let mockDb: MockFirestoreDb;
@@ -373,8 +394,10 @@ describe('Booking UI Backend Contract: GET /api/availability', () => {
     seedContractTestData(mockDb);
     vi.spyOn(firebaseAdminModule, 'getAdminDb').mockReturnValue(mockDb as any);
 
-    // Seed weekly schedules for emp_elene:
-    // Tuesday (day 2, 2026-09-22): working 10:00 - 18:00
+    // Seed weekly schedules for emp_elene and emp_giorgi:
+    // Tuesday (day 2, 2026-09-22):
+    // - emp_elene: working 10:00 - 18:00
+    // - emp_giorgi: working 11:00 - 15:00
     // Sunday (day 0, 2026-09-27): not working (isWorking: false)
     mockDb.store.get(COLLECTIONS.WEEKLY_SCHEDULES)!.set('emp_elene_tue', {
       id: 'emp_elene_tue',
@@ -383,6 +406,15 @@ describe('Booking UI Backend Contract: GET /api/availability', () => {
       isWorking: true,
       startTime: '10:00',
       endTime: '18:00',
+    });
+
+    mockDb.store.get(COLLECTIONS.WEEKLY_SCHEDULES)!.set('emp_giorgi_tue', {
+      id: 'emp_giorgi_tue',
+      employeeId: 'emp_giorgi',
+      dayOfWeek: 2,
+      isWorking: true,
+      startTime: '11:00',
+      endTime: '15:00',
     });
 
     mockDb.store.get(COLLECTIONS.WEEKLY_SCHEDULES)!.set('emp_elene_sun', {
@@ -395,34 +427,37 @@ describe('Booking UI Backend Contract: GET /api/availability', () => {
     });
   });
 
-  it('rejects missing or invalid query parameters with 400 BadRequestError', async () => {
+  it('rejects missing or malformed query parameters with 400 VALIDATION_FAILED', async () => {
     const missingService = await invokeRouterGet(availabilityRoutes, {
-      employeeId: 'emp_elene',
       date: '2026-09-22',
     });
     expect(missingService.statusCode).toBe(400);
+    expect(missingService.body.code).toBe('VALIDATION_FAILED');
+
+    const missingDate = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+    });
+    expect(missingDate.statusCode).toBe(400);
+    expect(missingDate.body.code).toBe('VALIDATION_FAILED');
 
     const badDate = await invokeRouterGet(availabilityRoutes, {
       serviceId: 'srv_haircut',
-      employeeId: 'emp_elene',
       date: '22-09-2026',
     });
     expect(badDate.statusCode).toBe(400);
-    expect(badDate.body.code).toBe('INVALID_DATE_FORMAT');
+    expect(badDate.body.code).toBe('VALIDATION_FAILED');
 
     const impossibleCalendarDate = await invokeRouterGet(availabilityRoutes, {
       serviceId: 'srv_haircut',
-      employeeId: 'emp_elene',
       date: '2026-02-31',
     });
     expect(impossibleCalendarDate.statusCode).toBe(400);
-    expect(impossibleCalendarDate.body.code).toBe('INVALID_DATE_FORMAT');
+    expect(impossibleCalendarDate.body.code).toBe('VALIDATION_FAILED');
   });
 
   it('rejects past dates and dates exceeding the 7-day booking window', async () => {
     const pastRes = await invokeRouterGet(availabilityRoutes, {
       serviceId: 'srv_haircut',
-      employeeId: 'emp_elene',
       date: '2026-09-21', // yesterday
     });
     expect(pastRes.statusCode).toBe(400);
@@ -430,7 +465,6 @@ describe('Booking UI Backend Contract: GET /api/availability', () => {
 
     const tooFarRes = await invokeRouterGet(availabilityRoutes, {
       serviceId: 'srv_haircut',
-      employeeId: 'emp_elene',
       date: '2026-09-30', // 8 days ahead (> 7)
     });
     expect(tooFarRes.statusCode).toBe(400);
@@ -439,62 +473,46 @@ describe('Booking UI Backend Contract: GET /api/availability', () => {
 
   it('validates service existence, active status, and configuration (D45)', async () => {
     await expect(
-      getAvailableSlots(
-        { serviceId: 'srv_missing', employeeId: 'emp_elene', date: '2026-09-22' },
-        mockDb
-      )
+      getAvailableSlots({ serviceId: 'srv_missing', date: '2026-09-22' }, mockDb)
     ).rejects.toThrow(NotFoundError);
 
     await expect(
-      getAvailableSlots(
-        { serviceId: 'srv_inactive', employeeId: 'emp_elene', date: '2026-09-22' },
-        mockDb
-      )
+      getAvailableSlots({ serviceId: 'srv_inactive', date: '2026-09-22' }, mockDb)
     ).rejects.toThrow(BadRequestError);
 
     await expect(
-      getAvailableSlots(
-        { serviceId: 'srv_invalid_range', employeeId: 'emp_elene', date: '2026-09-22' },
-        mockDb
-      )
+      getAvailableSlots({ serviceId: 'srv_invalid_range', date: '2026-09-22' }, mockDb)
     ).rejects.toThrow(BadRequestError);
   });
 
-  it('validates employee existence, active status, customer-facing type (D10), and service eligibility (D46)', async () => {
-    // Non-existent employee -> 404
-    await expect(
-      getAvailableSlots(
-        { serviceId: 'srv_haircut', employeeId: 'emp_missing', date: '2026-09-22' },
-        mockDb
-      )
-    ).rejects.toThrow(NotFoundError);
+  it('D3: returns availability grouped by eligible active CUSTOMER_FACING employees without requiring employeeId', async () => {
+    const res = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+      date: '2026-09-22',
+    });
 
-    // Inactive employee -> 400 EMPLOYEE_NOT_AVAILABLE
-    await expect(
-      getAvailableSlots(
-        { serviceId: 'srv_haircut', employeeId: 'emp_inactive', date: '2026-09-22' },
-        mockDb
-      )
-    ).rejects.toThrow(/not active/);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.status).toBe('ok');
+    expect(res.body.serviceId).toBe('srv_haircut');
+    expect(res.body.date).toBe('2026-09-22');
+    expect(res.body.durationMinutes).toBe(60);
 
-    // Internal employee -> 400 EMPLOYEE_NOT_BOOKABLE
-    await expect(
-      getAvailableSlots(
-        { serviceId: 'srv_haircut', employeeId: 'emp_internal', date: '2026-09-22' },
-        mockDb
-      )
-    ).rejects.toThrow(/internal employee/);
+    // Only emp_elene and emp_giorgi are eligible, active, customer-facing
+    // emp_internal and emp_inactive are strictly excluded
+    const employeeIds = res.body.employees.map((e: any) => e.employeeId);
+    expect(employeeIds).toEqual(['emp_elene', 'emp_giorgi']);
+    expect(employeeIds).not.toContain('emp_internal');
+    expect(employeeIds).not.toContain('emp_inactive');
 
-    // Ineligible employee-service assignment (Giorgi has inactive assignment for srv_coloring) -> 400
-    await expect(
-      getAvailableSlots(
-        { serviceId: 'srv_coloring', employeeId: 'emp_giorgi', date: '2026-09-22' },
-        mockDb
-      )
-    ).rejects.toThrow(/inactive/);
+    // For srv_coloring, Giorgi's assignment is inactive, so only emp_elene is returned
+    const coloringRes = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_coloring',
+      date: '2026-09-22',
+    });
+    expect(coloringRes.body.employees.map((e: any) => e.employeeId)).toEqual(['emp_elene']);
   });
 
-  it('generates feasible slots respecting weekly working hours, breaks, and existing ledger bookings', async () => {
+  it('D4: generates packed/service-specific feasible slots for 60-minute service respecting breaks and bookings', async () => {
     // Add a lunch break 13:00 - 14:00 on Tuesday for emp_elene
     mockDb.store.get(COLLECTIONS.SCHEDULE_BREAKS)!.set('brk_tue', {
       id: 'brk_tue',
@@ -523,66 +541,119 @@ describe('Booking UI Backend Contract: GET /api/availability', () => {
 
     const res = await invokeRouterGet(availabilityRoutes, {
       serviceId: 'srv_haircut', // 60 min
-      employeeId: 'emp_elene',
       date: '2026-09-22',
     });
 
     expect(res.statusCode).toBe(200);
-    expect(res.body.status).toBe('ok');
-    expect(res.body.durationMinutes).toBe(60);
+    const elene = res.body.employees.find((e: any) => e.employeeId === 'emp_elene')!;
+    const giorgi = res.body.employees.find((e: any) => e.employeeId === 'emp_giorgi')!;
 
-    const startTimes = res.body.slots.map((s: any) => s.startTime);
+    // Elene available intervals: [10:00, 13:00], [14:00, 15:00], [16:00, 18:00]
+    // Packed 60-minute slots:
+    // [10:00, 13:00] -> 10:00-11:00, 11:00-12:00, 12:00-13:00
+    // [14:00, 15:00] -> 14:00-15:00
+    // [16:00, 18:00] -> 16:00-17:00, 17:00-18:00
+    expect(elene.slots).toEqual([
+      { startTime: '10:00', endTime: '11:00' },
+      { startTime: '11:00', endTime: '12:00' },
+      { startTime: '12:00', endTime: '13:00' },
+      { startTime: '14:00', endTime: '15:00' },
+      { startTime: '16:00', endTime: '17:00' },
+      { startTime: '17:00', endTime: '18:00' },
+    ]);
 
-    // Shift is 10:00 - 18:00 (60 min service):
-    // Before break (13:00-14:00): 10:00, 10:30, 11:00, 11:30, 12:00 (12:00-13:00 is back-to-back allowed!)
-    // 12:30 (12:30-13:30), 13:00 (13:00-14:00), 13:30 (13:30-14:30) overlap break -> excluded!
-    // Between break and booking (15:00-16:00): 14:00 (14:00-15:00 back-to-back allowed!)
-    // 14:30 (14:30-15:30), 15:00 (15:00-16:00), 15:30 (15:30-16:30) overlap booking -> excluded!
-    // After booking until 18:00: 16:00 (16:00-17:00), 16:30 (16:30-17:30), 17:00 (17:00-18:00)
-    // 17:30 (17:30-18:30 > 18:00) -> excluded!
-    expect(startTimes).toEqual([
-      '10:00',
-      '10:30',
-      '11:00',
-      '11:30',
-      '12:00',
-      '14:00',
-      '16:00',
-      '16:30',
-      '17:00',
+    // Giorgi available interval: [11:00, 15:00] -> packed 60-minute slots: 11:00, 12:00, 13:00, 14:00
+    expect(giorgi.slots).toEqual([
+      { startTime: '11:00', endTime: '12:00' },
+      { startTime: '12:00', endTime: '13:00' },
+      { startTime: '13:00', endTime: '14:00' },
+      { startTime: '14:00', endTime: '15:00' },
     ]);
   });
 
-  it('uses D45 midpoint duration (90 min for 60-120 range) when calculating slot end times and fit', async () => {
+  it('D4: generates packed slots for 45-minute service (10:00, 10:45, 11:30, 12:15...) without a fixed 30-min grid', async () => {
+    // Lunch break 13:00 - 14:00 and booking 15:00 - 16:00
+    mockDb.store.get(COLLECTIONS.SCHEDULE_BREAKS)!.set('brk_tue', {
+      id: 'brk_tue',
+      employeeId: 'emp_elene',
+      scheduleId: 'emp_elene_tue',
+      dayOfWeek: 2,
+      startTime: '13:00',
+      endTime: '14:00',
+    });
+    mockDb.store.get(COLLECTIONS.AVAILABILITY)!.set('emp_elene_2026-09-22', {
+      id: 'emp_elene_2026-09-22',
+      employeeId: 'emp_elene',
+      date: '2026-09-22',
+      bookedIntervals: [
+        {
+          bookingId: 'b_1',
+          bookingItemId: 'bi_1',
+          startTime: '15:00',
+          endTime: '16:00',
+        },
+      ],
+      updatedAt: '2026-09-22T00:00:00.000Z',
+    });
+
+    const result = await getAvailableSlots(
+      {
+        serviceId: 'srv_manicure', // 45 min
+        date: '2026-09-22',
+      },
+      mockDb
+    );
+
+    expect(result.durationMinutes).toBe(45);
+    const elene = result.employees.find((e) => e.employeeId === 'emp_elene')!;
+
+    // [10:00, 13:00] -> 10:00-10:45, 10:45-11:30, 11:30-12:15, 12:15-13:00
+    // [14:00, 15:00] -> 14:00-14:45 (14:45+45=15:30 > 15:00)
+    // [16:00, 18:00] -> 16:00-16:45, 16:45-17:30 (17:30+45=18:15 > 18:00)
+    expect(elene.slots).toEqual([
+      { startTime: '10:00', endTime: '10:45' },
+      { startTime: '10:45', endTime: '11:30' },
+      { startTime: '11:30', endTime: '12:15' },
+      { startTime: '12:15', endTime: '13:00' },
+      { startTime: '14:00', endTime: '14:45' },
+      { startTime: '16:00', endTime: '16:45' },
+      { startTime: '16:45', endTime: '17:30' },
+    ]);
+  });
+
+  it('D4 & D45: uses midpoint duration (90 min for 60-120 range) to pack 90-minute slots', async () => {
     const result = await getAvailableSlots(
       {
         serviceId: 'srv_coloring', // 60-120 -> 90 min
-        employeeId: 'emp_elene',
-        date: '2026-09-22', // 10:00 - 18:00
+        date: '2026-09-22', // 10:00 - 18:00 (480 min)
       },
       mockDb
     );
 
     expect(result.durationMinutes).toBe(90);
-    expect(result.slots[0]).toEqual({ startTime: '10:00', endTime: '11:30' });
-    // Last slot for 90-min service ending by 18:00 is 16:30 - 18:00
-    expect(result.slots[result.slots.length - 1]).toEqual({
-      startTime: '16:30',
-      endTime: '18:00',
-    });
+    const elene = result.employees.find((e) => e.employeeId === 'emp_elene')!;
+
+    // Packed 90-minute slots in [10:00, 18:00]:
+    // 10:00-11:30, 11:30-13:00, 13:00-14:30, 14:30-16:00, 16:00-17:30
+    expect(elene.slots).toEqual([
+      { startTime: '10:00', endTime: '11:30' },
+      { startTime: '11:30', endTime: '13:00' },
+      { startTime: '13:00', endTime: '14:30' },
+      { startTime: '14:30', endTime: '16:00' },
+      { startTime: '16:00', endTime: '17:30' },
+    ]);
   });
 
   it('returns empty slots array on weekly non-working day and on schedule exception OFF', async () => {
     // Sunday 2026-09-27 is non-working in weeklySchedules
     const sundayResult = await getAvailableSlots(
       {
-        serviceId: 'srv_haircut',
-        employeeId: 'emp_elene',
+        serviceId: 'srv_coloring',
         date: '2026-09-27',
       },
       mockDb
     );
-    expect(sundayResult.slots).toEqual([]);
+    expect(sundayResult.employees[0].slots).toEqual([]);
 
     // Add OFF exception on Wednesday 2026-09-23
     mockDb.store.get(COLLECTIONS.SCHEDULE_EXCEPTIONS)!.set('exc_off_wed', {
@@ -595,13 +666,12 @@ describe('Booking UI Backend Contract: GET /api/availability', () => {
 
     const offExceptionResult = await getAvailableSlots(
       {
-        serviceId: 'srv_haircut',
-        employeeId: 'emp_elene',
+        serviceId: 'srv_coloring',
         date: '2026-09-23',
       },
       mockDb
     );
-    expect(offExceptionResult.slots).toEqual([]);
+    expect(offExceptionResult.employees[0].slots).toEqual([]);
   });
 
   it('respects CUSTOM_HOURS schedule exception overriding standard weekly hours', async () => {
@@ -618,36 +688,163 @@ describe('Booking UI Backend Contract: GET /api/availability', () => {
     const result = await getAvailableSlots(
       {
         serviceId: 'srv_haircut', // 60 min
-        employeeId: 'emp_elene',
         date: '2026-09-24',
       },
       mockDb
     );
 
-    expect(result.slots).toEqual([
+    const elene = result.employees.find((e) => e.employeeId === 'emp_elene')!;
+    // Packed 60-min slots in [12:00, 14:00]: 12:00-13:00, 13:00-14:00
+    expect(elene.slots).toEqual([
       { startTime: '12:00', endTime: '13:00' },
-      { startTime: '12:30', endTime: '13:30' },
       { startTime: '13:00', endTime: '14:00' },
     ]);
   });
 
   it('enforces same-day 30-minute minimum lead time in Asia/Tbilisi', async () => {
-    // Advance system clock to 10:45 Asia/Tbilisi on 2026-09-22 (06:45 UTC)
-    // Minimum allowed start time on 2026-09-22 is 10:45 + 30m = 11:15 -> first 30m slot is 11:30
-    vi.setSystemTime(new Date('2026-09-22T06:45:00.000Z'));
+    // Advance system clock to 10:30 Asia/Tbilisi on 2026-09-22 (06:30 UTC)
+    // Minimum allowed start time on 2026-09-22 is 10:30 + 30m = 11:00
+    vi.setSystemTime(new Date('2026-09-22T06:30:00.000Z'));
 
     const todayResult = await getAvailableSlots(
       {
         serviceId: 'srv_haircut',
-        employeeId: 'emp_elene',
         date: '2026-09-22',
       },
       mockDb
     );
 
-    expect(todayResult.slots[0].startTime).toBe('11:30');
-    expect(todayResult.slots.map((s) => s.startTime)).not.toContain('10:00');
-    expect(todayResult.slots.map((s) => s.startTime)).not.toContain('10:30');
-    expect(todayResult.slots.map((s) => s.startTime)).not.toContain('11:00');
+    const elene = todayResult.employees.find((e) => e.employeeId === 'emp_elene')!;
+    expect(elene.slots[0]).toEqual({ startTime: '11:00', endTime: '12:00' });
+    expect(elene.slots.map((s) => s.startTime)).not.toContain('10:00');
+  });
+
+  // ============================================================================
+  // SUITE 3: excludeInterval AVAILABILITY CONTRACT
+  // ============================================================================
+  it('valid excludeInterval removes overlapping candidate slots', async () => {
+    const res = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+      date: '2026-09-22',
+      excludeInterval: 'emp_elene,2026-09-22,11:00,12:00',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const elene = res.body.employees.find((e: any) => e.employeeId === 'emp_elene')!;
+    const eleneStartTimes = elene.slots.map((s: any) => s.startTime);
+    expect(eleneStartTimes).not.toContain('11:00');
+    expect(eleneStartTimes).toContain('10:00');
+    expect(eleneStartTimes).toContain('12:00');
+  });
+
+  it('non-matching exclusion date does not remove slots', async () => {
+    const res = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+      date: '2026-09-22',
+      excludeInterval: 'emp_elene,2026-09-23,11:00,12:00',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const elene = res.body.employees.find((e: any) => e.employeeId === 'emp_elene')!;
+    const eleneStartTimes = elene.slots.map((s: any) => s.startTime);
+    expect(eleneStartTimes).toContain('11:00');
+  });
+
+  it('exclusion supplied for employee A also excludes the same candidate time for employee B', async () => {
+    // Exclusion specified for emp_elene at 12:00-13:00 on 2026-09-22
+    const res = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+      date: '2026-09-22',
+      excludeInterval: 'emp_elene,2026-09-22,12:00,13:00',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const giorgi = res.body.employees.find((e: any) => e.employeeId === 'emp_giorgi')!;
+    const giorgiStartTimes = giorgi.slots.map((s: any) => s.startTime);
+
+    // Giorgi works 11:00 - 15:00 (11:00, 12:00, 13:00, 14:00)
+    // 12:00-13:00 must be excluded for Giorgi as well
+    expect(giorgiStartTimes).not.toContain('12:00');
+    expect(giorgiStartTimes).toEqual(['11:00', '13:00', '14:00']);
+
+    const elene = res.body.employees.find((e: any) => e.employeeId === 'emp_elene')!;
+    expect(elene.slots.map((s: any) => s.startTime)).not.toContain('12:00');
+  });
+
+  it('multiple exclusion intervals remove all matching candidate slots', async () => {
+    const res = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+      date: '2026-09-22',
+      excludeInterval: [
+        'emp_elene,2026-09-22,10:00,11:00',
+        'emp_giorgi,2026-09-22,13:00,14:00',
+      ],
+    });
+
+    expect(res.statusCode).toBe(200);
+    const elene = res.body.employees.find((e: any) => e.employeeId === 'emp_elene')!;
+    const eleneStartTimes = elene.slots.map((s: any) => s.startTime);
+    expect(eleneStartTimes).not.toContain('10:00');
+    expect(eleneStartTimes).not.toContain('13:00');
+
+    const giorgi = res.body.employees.find((e: any) => e.employeeId === 'emp_giorgi')!;
+    const giorgiStartTimes = giorgi.slots.map((s: any) => s.startTime);
+    expect(giorgiStartTimes).not.toContain('13:00');
+  });
+
+  it('malformed exclusion interval returns VALIDATION_FAILED', async () => {
+    // Missing parts
+    const badParts = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+      date: '2026-09-22',
+      excludeInterval: 'emp_elene,2026-09-22,10:00',
+    });
+    expect(badParts.statusCode).toBe(400);
+    expect(badParts.body.code).toBe('VALIDATION_FAILED');
+
+    // Invalid employee ID
+    const badEmp = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+      date: '2026-09-22',
+      excludeInterval: '@@invalid@@,2026-09-22,10:00,11:00',
+    });
+    expect(badEmp.statusCode).toBe(400);
+    expect(badEmp.body.code).toBe('VALIDATION_FAILED');
+
+    // Invalid date format
+    const badDate = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+      date: '2026-09-22',
+      excludeInterval: 'emp_elene,22-09-2026,10:00,11:00',
+    });
+    expect(badDate.statusCode).toBe(400);
+    expect(badDate.body.code).toBe('VALIDATION_FAILED');
+
+    // Impossible calendar date
+    const badCalendar = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+      date: '2026-09-22',
+      excludeInterval: 'emp_elene,2026-02-31,10:00,11:00',
+    });
+    expect(badCalendar.statusCode).toBe(400);
+    expect(badCalendar.body.code).toBe('VALIDATION_FAILED');
+
+    // End time before start time
+    const invertedTime = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+      date: '2026-09-22',
+      excludeInterval: 'emp_elene,2026-09-22,11:00,10:00',
+    });
+    expect(invertedTime.statusCode).toBe(400);
+    expect(invertedTime.body.code).toBe('VALIDATION_FAILED');
+
+    // Invalid time string
+    const badTime = await invokeRouterGet(availabilityRoutes, {
+      serviceId: 'srv_haircut',
+      date: '2026-09-22',
+      excludeInterval: 'emp_elene,2026-09-22,25:00,26:00',
+    });
+    expect(badTime.statusCode).toBe(400);
+    expect(badTime.body.code).toBe('VALIDATION_FAILED');
   });
 });
